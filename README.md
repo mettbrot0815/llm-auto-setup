@@ -17,8 +17,6 @@ Ubuntu 22.04 / 24.04 · WSL2 ready · NVIDIA / AMD / CPU
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/mettbrot0815/llm-auto-setup/main/llm-auto-setup.sh)
 
-```bash
 sudo chmod+x ./llm-auto-setup.sh
 
-```bash
 ./llm-auto-setup.sh
