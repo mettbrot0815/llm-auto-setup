@@ -649,10 +649,12 @@ step "Directories"
 mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" "$BIN_DIR" "$CONFIG_DIR" "$GUI_DIR"
 info "Directories ready."
 
-# PATH wired to ~/.bashrc only — consistent with alias approach
+# PATH wired to ~/.bashrc only — consistent with alias approach.
+# Use printf: $BIN_DIR expands NOW (real path baked in); \$PATH stays literal
+# so it expands correctly when .bashrc is sourced later.
 if ! grep -q "# llm-auto-setup PATH" "$HOME/.bashrc" 2>/dev/null; then
-    { echo ""; echo "# llm-auto-setup PATH"
-      echo '[[ ":$PATH:" != *":$BIN_DIR:"* ]] && export PATH="$BIN_DIR:$PATH"'; } >> "$HOME/.bashrc"
+    { printf '\n# llm-auto-setup PATH\n'
+      printf '[[ ":$PATH:" != *":%s:"* ]] && export PATH="%s:$PATH"\n'           "$BIN_DIR" "$BIN_DIR"; } >> "$HOME/.bashrc"
     info "Added $BIN_DIR to PATH in ~/.bashrc"
 fi
 [[ ":$PATH:" != *":$BIN_DIR:"* ]] && export PATH="$BIN_DIR:$PATH"
@@ -701,7 +703,7 @@ if (( HAS_NVIDIA )); then
         if [[ -z "$lib_dir" ]]; then
             warn "libcudart.so.12 not found in filesystem or ldconfig cache."
             warn "  This usually means CUDA installed but ldconfig hasn't run yet."
-            warn "  Try: sudo ldconfig && source ~/.bashrc"
+            warn "  Try: sudo ldconfig && exec bash"
             return 1
         fi
 
@@ -2527,7 +2529,7 @@ if (( HAS_NVIDIA )); then
         PASS=$(( PASS + 1 ))
     else
         warn "✘ libcudart.so.12 not found."
-        warn "  Fix: sudo ldconfig && source ~/.bashrc"
+        warn "  Fix: sudo ldconfig && exec bash"
         WARN_COUNT=$(( WARN_COUNT + 1 ))
     fi
 elif (( HAS_AMD_GPU )); then
@@ -2552,10 +2554,10 @@ else
     warn "✘ llama-cpp-python import failed."
     if (( HAS_NVIDIA )); then
         warn "  This may be a CUDA library path issue. Try:"
-        warn "    sudo ldconfig && source ~/.bashrc"
+        warn "    sudo ldconfig && exec bash"
     elif (( HAS_AMD_GPU )); then
         warn "  This may be a ROCm/HIP library path issue. Try:"
-        warn "    source ~/.bashrc  (ROCm libs should be in LD_LIBRARY_PATH)"
+        warn "    exec bash  (reloads LD_LIBRARY_PATH with ROCm libs)"
         warn "    hipconfig --version  (checks ROCm install)"
     fi
     warn "    $VENV_DIR/bin/python3 -c 'import llama_cpp'"
