@@ -76,11 +76,18 @@ step "Pre-flight checks"
 command -v sudo &>/dev/null || error "sudo is required."
 
 # ── Single sudo prompt — keep credentials alive for the entire script ─────────
-# User types their password exactly once here. A background loop refreshes the
-# sudo timestamp every 50 s so it never expires mid-install.
+# sudo -v prompts once, then the background loop calls sudo -v (not sudo -n true)
+# every 50 s to extend the TTY-scoped timestamp.
+#
+# Why sudo -v and not sudo -n true:
+#   Ubuntu 22.04+ defaults to timestamp_type=ppid — each process has its own
+#   credential record. sudo -n true refreshes only the subprocess's record,
+#   so the parent shell can still expire and re-prompt mid-install.
+#   sudo -v extends the timestamp for the whole TTY session, which is what
+#   every subsequent sudo call in this script actually checks.
 echo -e "${CYAN}[sudo]${NC} This script needs elevated privileges for apt, systemd, and CUDA/ROCm."
 sudo -v || error "sudo authentication failed."
-( while true; do sudo -n true; sleep 50; done ) &
+( while true; do sleep 50; sudo -v; done ) &
 SUDO_KEEPALIVE_PID=$!
 # Ensure keepalive is killed even if script exits early (error, Ctrl-C, etc.)
 trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT INT TERM
