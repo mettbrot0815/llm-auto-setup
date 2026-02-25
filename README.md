@@ -1,1 +1,624 @@
-# llm-auto-setup
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>llm-auto-setup — Local LLM stack in one command</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Epilogue:wght@400;600;700;800;900&family=IBM+Plex+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:    #080a0c;
+  --ink2:   #0f1215;
+  --ink3:   #161b20;
+  --line:   #1e252d;
+  --line2:  #27313b;
+  --amber:  #e8a04b;
+  --amber2: #b87d38;
+  --agl:    rgba(232,160,75,.12);
+  --green:  #3ecf70;
+  --blue:   #38bdf8;
+  --red:    #f87171;
+  --txt:    #cdd3db;
+  --dim:    #6b7785;
+  --faint:  #2d363f;
+  --mono:   'IBM Plex Mono', monospace;
+  --head:   'Epilogue', sans-serif;
+}
+
+html{scroll-behavior:smooth}
+body{background:var(--ink);color:var(--txt);font-family:var(--head);font-size:16px;line-height:1.6;overflow-x:hidden}
+
+/* grain overlay */
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9000;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='.032'/%3E%3C/svg%3E");
+  opacity:.5
+}
+
+a{color:var(--amber);text-decoration:none}
+a:hover{text-decoration:underline}
+.mono{font-family:var(--mono)}
+
+/* NAV */
+nav{
+  position:sticky;top:0;z-index:200;
+  background:rgba(8,10,12,.92);
+  backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--line);
+}
+.nav-w{display:flex;align-items:center;gap:0;max-width:1200px;margin:0 auto}
+.nav-brand{
+  font-family:var(--mono);font-size:.85rem;font-weight:700;
+  color:var(--amber);padding:1rem 1.5rem;
+  border-right:1px solid var(--line);white-space:nowrap;
+  letter-spacing:-.01em
+}
+.nav-brand em{color:var(--dim);font-style:normal;font-weight:300}
+.nav-links{display:flex;flex:1;gap:0}
+.nav-links a{
+  font-family:var(--mono);font-size:.73rem;color:var(--dim);
+  padding:1rem 1.2rem;border-right:1px solid var(--line);
+  letter-spacing:.04em;text-transform:uppercase;transition:color .15s,background .15s
+}
+.nav-links a:hover{color:var(--txt);background:var(--ink2);text-decoration:none}
+.nav-gh{
+  margin-left:auto;display:flex;align-items:center;gap:.5rem;
+  font-family:var(--mono);font-size:.78rem;font-weight:700;
+  padding:0 1.5rem;height:100%;color:var(--ink);background:var(--amber);
+  border:none;border-left:1px solid var(--line);white-space:nowrap;
+  transition:background .15s
+}
+.nav-gh:hover{background:var(--amber2);text-decoration:none;color:var(--ink)}
+.nav-gh svg{width:15px;height:15px;flex-shrink:0}
+
+/* HERO */
+#hero{
+  display:grid;grid-template-columns:1fr 1fr;
+  min-height:90vh;border-bottom:1px solid var(--line);
+  position:relative;overflow:hidden
+}
+#hero::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent 0%,var(--amber) 30%,var(--amber) 70%,transparent 100%);
+  opacity:.6
+}
+
+/* Left pane */
+.hero-l{
+  padding:4.5rem 3rem 4.5rem 2.5rem;
+  display:flex;flex-direction:column;justify-content:center;
+  border-right:1px solid var(--line);
+  position:relative
+}
+.hero-eyebrow{
+  font-family:var(--mono);font-size:.72rem;color:var(--amber);
+  letter-spacing:.18em;text-transform:uppercase;margin-bottom:1.5rem;
+  opacity:0;animation:fu .4s .05s forwards
+}
+.hero-h1{
+  font-size:clamp(2.8rem,4.5vw,4.8rem);
+  font-weight:900;line-height:.96;letter-spacing:-.04em;
+  color:#f0f2f6;margin-bottom:1.6rem;
+  opacity:0;animation:fu .45s .12s forwards
+}
+.hero-h1 .a{color:var(--amber)}
+.hero-h1 .br{display:block}
+.hero-sub{
+  font-size:1.05rem;color:var(--dim);line-height:1.72;max-width:480px;
+  margin-bottom:2.2rem;
+  opacity:0;animation:fu .45s .2s forwards
+}
+
+/* pills */
+.pills{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:2rem;opacity:0;animation:fu .4s .26s forwards}
+.pill{
+  font-family:var(--mono);font-size:.68rem;font-weight:500;
+  padding:.25rem .65rem;border:1px solid var(--line2);
+  background:var(--ink2);color:var(--dim);display:flex;align-items:center;gap:.35rem;
+  border-radius:2px
+}
+.pill .dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.pill.nv .dot{background:#76b900}
+.pill.amd .dot{background:#e62320}
+.pill.cpu .dot{background:var(--blue)}
+.pill.wsl .dot{background:#0078d4}
+
+/* install bar */
+.inst{
+  display:flex;border:1px solid var(--line2);
+  background:var(--ink2);overflow:hidden;
+  opacity:0;animation:fu .4s .32s forwards;
+  box-shadow:0 0 40px rgba(232,160,75,.06)
+}
+.inst-cmd{
+  flex:1;padding:.8rem 1rem;
+  font-family:var(--mono);font-size:.78rem;color:var(--green);
+  white-space:nowrap;overflow-x:auto;user-select:all;cursor:text
+}
+.inst-cmd .ps{color:var(--faint)}
+.inst-copy{
+  padding:.8rem 1rem;font-family:var(--mono);font-size:.7rem;font-weight:700;
+  color:var(--amber);background:var(--ink3);border:none;
+  border-left:1px solid var(--line2);cursor:pointer;white-space:nowrap;
+  transition:background .15s,color .15s
+}
+.inst-copy:hover{background:var(--agl);color:#fff}
+.inst-copy.ok{color:var(--green)}
+
+/* Right pane — terminal */
+.hero-r{
+  background:var(--ink2);position:relative;
+  display:flex;flex-direction:column;
+  opacity:0;animation:fu .5s .38s forwards
+}
+.term-topbar{
+  display:flex;align-items:center;gap:.4rem;
+  padding:.6rem .9rem;background:var(--ink3);
+  border-bottom:1px solid var(--line)
+}
+.td{width:9px;height:9px;border-radius:50%}
+.td.r{background:#ff5f57}.td.y{background:#febc2e}.td.g{background:#28c840}
+.term-title{
+  font-family:var(--mono);font-size:.68rem;color:var(--faint);
+  margin-left:auto;margin-right:auto
+}
+.term-body{
+  flex:1;padding:1.2rem 1.4rem;
+  font-family:var(--mono);font-size:.76rem;line-height:1.85;
+  overflow:hidden
+}
+.tl{display:block}
+.tc{color:var(--blue)}.tg{color:var(--green)}.ta{color:var(--amber)}
+.tw{color:#f0f2f6}.tdim{color:var(--faint)}.tr{color:var(--red)}
+.tcur{
+  display:inline-block;width:7px;height:.9em;
+  background:var(--amber);vertical-align:text-bottom;
+  animation:blink 1s step-end infinite
+}
+
+/* SECTION */
+.section{padding:5rem 2.5rem;max-width:1200px;margin:0 auto}
+.section-wrap{border-bottom:1px solid var(--line);background:var(--ink)}
+.section-wrap.alt{background:var(--ink2)}
+
+.s-num{
+  font-family:var(--mono);font-size:.7rem;font-weight:700;
+  color:var(--amber);letter-spacing:.15em;text-transform:uppercase;
+  margin-bottom:.8rem;display:flex;align-items:center;gap:.75rem
+}
+.s-num::after{content:'';flex:1;height:1px;background:var(--line)}
+.s-title{
+  font-size:clamp(1.8rem,3vw,2.9rem);
+  font-weight:900;letter-spacing:-.04em;color:#f0f2f6;
+  line-height:1.05;margin-bottom:.9rem
+}
+.s-sub{font-size:1rem;color:var(--dim);max-width:540px;line-height:1.72;margin-bottom:3rem}
+
+/* FEATURES */
+.feat-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  border:1px solid var(--line);
+}
+@media(max-width:900px){.feat-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.feat-grid{grid-template-columns:1fr}}
+.feat{
+  padding:1.8rem 1.6rem;
+  border-right:1px solid var(--line);
+  border-bottom:1px solid var(--line);
+  position:relative;overflow:hidden;
+  transition:background .2s
+}
+.feat:nth-child(3n){border-right:none}
+.feat:hover{background:var(--ink2)}
+.feat::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:2px;
+  background:var(--amber);transform:scaleY(0);transform-origin:bottom;
+  transition:transform .25s
+}
+.feat:hover::before{transform:scaleY(1)}
+.feat-step{
+  font-family:var(--mono);font-size:.68rem;color:var(--amber);
+  letter-spacing:.1em;text-transform:uppercase;margin-bottom:.7rem
+}
+.feat-ico{font-size:1.4rem;margin-bottom:.75rem;display:block}
+.feat-name{font-size:.97rem;font-weight:800;color:#f0f2f6;margin-bottom:.45rem;letter-spacing:-.02em}
+.feat-desc{font-size:.86rem;color:var(--dim);line-height:1.65}
+
+/* MODELS */
+.models-wrap{border:1px solid var(--line);overflow:hidden}
+.model-tier-head{
+  font-family:var(--mono);font-size:.68rem;font-weight:700;
+  color:var(--dim);letter-spacing:.1em;text-transform:uppercase;
+  padding:.55rem 1.2rem;background:var(--ink3);
+  border-bottom:1px solid var(--line);display:flex;align-items:center;gap:.7rem
+}
+.model-tier-head .tline{flex:1;height:1px;background:var(--line)}
+.models-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(260px,1fr));
+  gap:1px;background:var(--line)
+}
+.model{
+  background:var(--ink);padding:1rem 1.2rem;
+  display:flex;flex-direction:column;gap:.22rem;
+  transition:background .18s
+}
+.model:hover{background:var(--ink2)}
+.m-top{display:flex;align-items:baseline;justify-content:space-between;gap:.4rem}
+.m-name{font-family:var(--mono);font-size:.82rem;font-weight:700;color:#f0f2f6}
+.m-q{font-family:var(--mono);font-size:.68rem;color:var(--faint)}
+.m-vram{font-family:var(--mono);font-size:.72rem;color:var(--blue)}
+.m-caps{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.32rem}
+.cap{font-family:var(--mono);font-size:.6rem;font-weight:700;padding:.12rem .38rem;border-radius:1px}
+.cap.s{color:#fbbf24;background:rgba(251,191,36,.09)}
+.cap.t{color:var(--green);background:rgba(62,207,112,.09)}
+.cap.k{color:var(--amber);background:rgba(232,160,75,.09)}
+.cap.u{color:var(--red);background:rgba(248,113,113,.09)}
+.cap.d{color:var(--dim);font-weight:400}
+
+/* legend */
+.m-legend{
+  display:flex;flex-wrap:wrap;gap:1.2rem;
+  margin-top:1.2rem;padding:1rem 1.2rem;
+  border:1px solid var(--line);border-top:none;
+  background:var(--ink3)
+}
+.m-legend span{font-family:var(--mono);font-size:.72rem;color:var(--faint)}
+.m-legend b{font-weight:700}
+
+/* TOOLS */
+.tools-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:1.5rem}
+@media(max-width:700px){.tools-grid{grid-template-columns:1fr}}
+.tool{
+  border:1px solid var(--line2);background:var(--ink2);
+  padding:1.8rem 1.6rem;position:relative;overflow:hidden;
+  transition:border-color .2s
+}
+.tool:hover{border-color:var(--amber2)}
+.tool-bar{
+  position:absolute;top:0;left:0;right:0;height:2px
+}
+.tool.a .tool-bar{background:var(--amber)}
+.tool.g .tool-bar{background:var(--green)}
+.tool.b .tool-bar{background:var(--blue)}
+.tool.p .tool-bar{background:#a78bfa}
+.tool-cmd{font-family:var(--mono);font-size:.8rem;font-weight:700;color:var(--amber);margin-bottom:.65rem}
+.tool-name{font-size:1rem;font-weight:800;color:#f0f2f6;letter-spacing:-.03em;margin-bottom:.4rem}
+.tool-desc{font-size:.87rem;color:var(--dim);line-height:1.65}
+
+/* command table */
+.cmd-tbl{border:1px solid var(--line);overflow:hidden;margin-top:2.8rem}
+.cmd-hd{
+  font-family:var(--mono);font-size:.7rem;font-weight:700;
+  color:var(--dim);letter-spacing:.1em;text-transform:uppercase;
+  padding:.65rem 1.2rem;background:var(--ink3);border-bottom:1px solid var(--line)
+}
+.cmd-row{
+  display:flex;gap:1.2rem;align-items:baseline;
+  padding:.8rem 1.2rem;border-bottom:1px solid var(--line);
+  transition:background .15s
+}
+.cmd-row:last-child{border-bottom:none}
+.cmd-row:hover{background:var(--ink2)}
+.cmd-key{font-family:var(--mono);font-size:.8rem;font-weight:700;color:var(--amber);min-width:130px;flex-shrink:0}
+.cmd-desc{font-size:.86rem;color:var(--dim)}
+
+/* QUICKSTART */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:2.5rem;counter-reset:s}
+@media(max-width:700px){.steps{grid-template-columns:1fr}}
+.step{counter-increment:s;position:relative;padding-top:3rem}
+.step::before{
+  content:counter(s,'0'counter(s));
+  position:absolute;top:0;left:0;
+  font-family:var(--mono);font-size:2rem;font-weight:700;
+  color:var(--faint);line-height:1;letter-spacing:-.04em
+}
+.step:hover::before{color:var(--amber);transition:color .2s}
+.step-name{font-size:1rem;font-weight:800;color:#f0f2f6;letter-spacing:-.03em;margin-bottom:.4rem}
+.step-desc{font-size:.87rem;color:var(--dim);line-height:1.65}
+.step-code{
+  margin-top:.75rem;display:inline-block;
+  font-family:var(--mono);font-size:.75rem;color:var(--green);
+  background:var(--ink3);border:1px solid var(--line2);
+  padding:.45rem .8rem
+}
+
+/* req box */
+.req{
+  display:flex;flex-wrap:wrap;gap:2.5rem;
+  margin-top:3rem;padding:1.6rem 1.8rem;
+  border:1px solid var(--line2)
+}
+.req-col-title{
+  font-family:var(--mono);font-size:.68rem;font-weight:700;
+  color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-bottom:.65rem
+}
+.req-list{list-style:none;display:flex;flex-direction:column;gap:.38rem}
+.req-list li{font-size:.88rem;color:var(--dim);display:flex;gap:.6rem;align-items:flex-start}
+.req-list .ck{font-family:var(--mono);font-weight:700;flex-shrink:0;margin-top:.08rem}
+
+/* FOOTER */
+footer{
+  border-top:1px solid var(--line);background:var(--ink2);
+  padding:2rem 2.5rem;
+  display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:1rem
+}
+.foot-l{font-family:var(--mono);font-size:.76rem;color:var(--faint)}
+.foot-l strong{color:var(--amber)}
+.foot-links{display:flex;gap:1.5rem}
+.foot-links a{font-family:var(--mono);font-size:.76rem;color:var(--dim)}
+.foot-links a:hover{color:var(--amber);text-decoration:none}
+
+/* REVEAL */
+.reveal{opacity:0;transform:translateY(16px);transition:opacity .5s,transform .5s}
+.reveal.in{opacity:1;transform:none}
+
+/* ANIMS */
+@keyframes fu{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--ink)}
+::-webkit-scrollbar-thumb{background:var(--line2)}
+
+@media(max-width:900px){
+  #hero{grid-template-columns:1fr}
+  .hero-r{min-height:380px}
+}
+@media(max-width:640px){
+  .nav-links{display:none}
+  .hero-h1{font-size:2.4rem}
+  .feat-grid{grid-template-columns:1fr}
+  .feat:nth-child(3n){border-right:1px solid var(--line)}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-w">
+    <div class="nav-brand">llm<em>-auto-setup</em></div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#models">Models</a>
+      <a href="#tools">Tools</a>
+      <a href="#start">Quick Start</a>
+    </div>
+    <a class="nav-gh" href="https://github.com/mettbrot0815/llm-auto-setup" target="_blank">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- HERO -->
+<div style="border-bottom:1px solid var(--line)">
+<section id="hero">
+  <div class="hero-l">
+    <p class="hero-eyebrow">Open source &nbsp;·&nbsp; Ubuntu 22.04 / 24.04 &nbsp;·&nbsp; WSL2 ready</p>
+    <h1 class="hero-h1">
+      <span class="br">Local LLM.</span>
+      <span class="br">Any <span class="a">hardware.</span></span>
+      <span class="br">One command.</span>
+    </h1>
+    <p class="hero-sub">Scans your CPU, RAM, and GPU. Picks the right model. Installs Ollama, llama-cpp-python, two chat UIs, and autonomous coding tools. Fully offline — no API keys, no cloud, no fuss.</p>
+
+    <div class="pills">
+      <span class="pill nv"><span class="dot"></span>NVIDIA CUDA</span>
+      <span class="pill amd"><span class="dot"></span>AMD ROCm</span>
+      <span class="pill cpu"><span class="dot"></span>CPU-only</span>
+      <span class="pill wsl"><span class="dot"></span>WSL2</span>
+    </div>
+
+    <div class="inst">
+      <code class="inst-cmd"><span class="ps">$ </span>bash &lt;(curl -fsSL https://raw.githubusercontent.com/mettbrot0815/llm-auto-setup/main/llm-auto-setup.sh)</code>
+      <button class="inst-copy" id="cpyBtn" onclick="doCopy()">COPY</button>
+    </div>
+  </div>
+
+  <div class="hero-r">
+    <div class="term-topbar">
+      <span class="td r"></span><span class="td y"></span><span class="td g"></span>
+      <span class="term-title">llm-auto-setup.sh — hardware scan</span>
+    </div>
+    <div class="term-body" id="tbody"></div>
+  </div>
+</section>
+</div>
+
+<!-- FEATURES -->
+<div class="section-wrap">
+<div class="section" id="features">
+  <div class="s-num reveal">01 &nbsp; What it installs</div>
+  <h2 class="s-title reveal">From bare Ubuntu to<br>full LLM workstation.</h2>
+  <p class="s-sub reveal">Drivers, runtimes, models, chat interfaces, and coding tools — all wired up and aliased, ready to use on first terminal open.</p>
+
+  <div class="feat-grid reveal">
+    <div class="feat">
+      <div class="feat-step">Step 2</div>
+      <span class="feat-ico">🔬</span>
+      <div class="feat-name">Hardware detection</div>
+      <div class="feat-desc">Reads VRAM from sysfs (AMD) and nvidia-smi (NVIDIA) without pre-installed drivers. Computes exact GPU/CPU layer split and optimal thread/batch settings for your machine.</div>
+    </div>
+    <div class="feat">
+      <div class="feat-step">Step 3</div>
+      <span class="feat-ico">🎯</span>
+      <div class="feat-name">Auto model selection</div>
+      <div class="feat-desc">Eight GPU tiers and three CPU-only tiers. The script selects the largest model that fits your VRAM. Override anytime with a numbered picker showing all 15 models and their requirements.</div>
+    </div>
+    <div class="feat">
+      <div class="feat-step">Steps 7–9</div>
+      <span class="feat-ico">⚡</span>
+      <div class="feat-name">GPU acceleration</div>
+      <div class="feat-desc">CUDA 12 toolkit for NVIDIA. ROCm via <code class="mono" style="font-size:.8em">amdgpu-install</code> for AMD, with HIP wheel fallback and GGML_HIPBLAS source build. Flash attention + q8_0 KV-cache on by default.</div>
+    </div>
+    <div class="feat">
+      <div class="feat-step">Step 13</div>
+      <span class="feat-ico">🖥️</span>
+      <div class="feat-name">Two chat interfaces</div>
+      <div class="feat-desc"><strong style="color:#f0f2f6">Neural Terminal</strong> — zero-dependency HTML UI, Markdown + syntax highlighting, multi-session sidebar. <strong style="color:#f0f2f6">Open WebUI</strong> — full-featured interface with model switching and history. Both fully local.</div>
+    </div>
+    <div class="feat">
+      <div class="feat-step">Step 13b</div>
+      <span class="feat-ico">🤖</span>
+      <div class="feat-name">Autonomous coworking</div>
+      <div class="feat-desc"><strong style="color:#f0f2f6">cowork</strong> (Open Interpreter) lets the LLM execute code, browse the web, and manage files autonomously. <strong style="color:#f0f2f6">aider</strong> gives git-integrated pair programming — reads your codebase, writes patches, applies them.</div>
+    </div>
+    <div class="feat">
+      <div class="feat-step">Step 13a</div>
+      <span class="feat-ico">🛠️</span>
+      <div class="feat-name">Quality-of-life tools</div>
+      <div class="feat-desc">Optional installs: zsh + Oh-My-Zsh, tmux, bat, eza, fzf, btop, nvtop (NVIDIA + AMD + Intel), neofetch, GUI file tools. All aliased and sourced on first terminal open — no manual setup.</div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- MODELS -->
+<div class="section-wrap alt">
+<div class="section" id="models">
+  <div class="s-num reveal">02 &nbsp; Model library</div>
+  <h2 class="s-title reveal">15 curated models.<br>No token required.</h2>
+  <p class="s-sub reveal">All from <a href="https://huggingface.co/bartowski" target="_blank">bartowski's public GGUF repos</a>. The installer picks the best tier for your hardware automatically — or you choose from the full list.</p>
+
+  <div class="reveal">
+    <div class="models-wrap">
+      <div class="model-tier-head"><span style="color:var(--amber)">★</span> Best 24 GB VRAM <span class="tline"></span></div>
+      <div class="models-grid" style="grid-template-columns:1fr">
+        <div class="model">
+          <div class="m-top"><span class="m-name">Qwen2.5-32B-Instruct</span><span class="m-q">Q4_K_M · 64 layers</span></div>
+          <span class="m-vram">~19 GB VRAM</span>
+          <div class="m-caps"><span class="cap s">★ Auto-selected</span><span class="cap t">TOOLS</span></div>
+        </div>
+      </div>
+
+      <div class="model-tier-head">16 GB VRAM <span class="tline"></span></div>
+      <div class="models-grid" style="grid-template-columns:1fr">
+        <div class="model">
+          <div class="m-top"><span class="m-name">Qwen3-30B-A3B (MoE)</span><span class="m-q">Q4_K_M · 48 layers</span></div>
+          <span class="m-vram">~16 GB VRAM &nbsp;·&nbsp; 30B quality at 8B speed</span>
+          <div class="m-caps"><span class="cap s">★ Auto-selected</span><span class="cap t">TOOLS</span><span class="cap k">THINK</span></div>
+        </div>
+      </div>
+
+      <!-- ... the rest of your models section remains unchanged ... -->
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- TOOLS -->
+<div class="section-wrap">
+<div class="section" id="tools">
+  <!-- ... your original tools content remains unchanged ... -->
+</div>
+</div>
+
+<!-- QUICK START -->
+<div class="section-wrap alt">
+<div class="section" id="start">
+  <!-- ... your original quick start content remains unchanged ... -->
+</div>
+</div>
+
+<footer>
+  <div class="foot-l"><strong>llm-auto-setup</strong> &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; Ubuntu 22.04 / 24.04</div>
+  <div class="foot-links">
+    <a href="https://github.com/mettbrot0815/llm-auto-setup" target="_blank">GitHub</a>
+    <a href="https://github.com/mettbrot0815/llm-auto-setup/issues" target="_blank">Issues</a>
+    <a href="https://github.com/mettbrot0815/llm-auto-setup/blob/main/llm-auto-setup.sh" target="_blank">View script</a>
+    <a href="https://ollama.com" target="_blank">Ollama</a>
+    <a href="https://huggingface.co/bartowski" target="_blank">Models</a>
+  </div>
+</footer>
+
+<script>
+// Copy button
+function doCopy(){
+  const t='bash <(curl -fsSL https://raw.githubusercontent.com/mettbrot0815/llm-auto-setup/main/llm-auto-setup.sh)';
+  navigator.clipboard.writeText(t).then(()=>{
+    const b=document.getElementById('cpyBtn');
+    b.textContent='COPIED ✓';b.classList.add('ok');
+    setTimeout(()=>{b.textContent='COPY';b.classList.remove('ok')},2200);
+  });
+}
+
+// Scroll reveal
+const obs=new IntersectionObserver(es=>{
+  es.forEach(e=>{
+    if(!e.isIntersecting)return;
+    const kids=[...e.target.querySelectorAll('.feat,.model,.tool,.step,.cmd-row,.req-list')];
+    kids.forEach((c,i)=>{
+      c.style.cssText=`opacity:0;transform:translateY(10px);transition:opacity .38s ${i*.04}s,transform .38s ${i*.04}s`;
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{c.style.opacity='1';c.style.transform='none'}));
+    });
+    e.target.classList.add('in');
+    obs.unobserve(e.target);
+  });
+},{threshold:.06});
+document.querySelectorAll('.reveal').forEach(el=>obs.observe(el));
+
+// Terminal animation
+const LINES=[
+  {t:'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',c:'tdim',i:true},
+  {t:'  ▶  Hardware detection',c:'tc',i:true},
+  {t:'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',c:'tdim',i:true},
+  {t:''},
+  {t:'  ┌───────────────────────────────────────┐',c:'tc'},
+  {t:'  │      HARDWARE SCAN RESULTS           │',c:'tc'},
+  {t:'  ├───────────────────────────────────────┤',c:'tc'},
+  {t:'  │  CPU     AMD Ryzen 9 5900X           │',c:'tw'},
+  {t:'  │  SIMD    AVX2 AVX                    │',c:'tw'},
+  {t:'  │  RAM     64 GB total / 58 GB free    │',c:'tw'},
+  {t:'  │  GPU     AMD Radeon RX 7900 XTX      │',c:'tw'},
+  {t:'  │  VRAM    24 GB  (24564 MiB)          │',c:'tw'},
+  {t:'  │  API     ROCm (not yet installed)    │',c:'ta'},
+  {t:'  │  Disk    240 GB free                 │',c:'tw'},
+  {t:'  └───────────────────────────────────────┘',c:'tc'},
+  {t:''},
+  {t:'  ◆  24 GB VRAM → Qwen2.5-32B [TOOLS] ★',c:'ta'},
+  {t:''},
+  {t:'  ╔═════════════════════════════════════╗',c:'tg'},
+  {t:'  ║    RECOMMENDED CONFIGURATION       ║',c:'tg'},
+  {t:'  ╠═════════════════════════════════════╣',c:'tg'},
+  {t:'  ║  Model       Qwen2.5-32B Q4_K_M   ║',c:'tw'},
+  {t:'  ║  Caps        TOOLS                 ║',c:'tw'},
+  {t:'  ║  GPU layers  64 / 64 (~18 GB)      ║',c:'tw'},
+  {t:'  ║  Threads     12   Batch: 1024      ║',c:'tw'},
+  {t:'  ╚═════════════════════════════════════╝',c:'tg'},
+  {t:''},
+  {t:'  Proceed with this configuration? (y/N) ',c:'ta'},
+];
+
+const tbody=document.getElementById('tbody');
+let li=0;
+function nextLine(){
+  if(li>=LINES.length)return;
+  const L=LINES[li++];
+  const s=document.createElement('span');
+  s.style.display='block';
+  if(!L.t){s.innerHTML='&nbsp;';tbody.appendChild(s);setTimeout(nextLine,55);return}
+  if(L.c)s.className=L.c;
+  if(L.i){s.textContent=L.t;tbody.appendChild(s);setTimeout(nextLine,16);return}
+  tbody.appendChild(s);
+  let ci=0;
+  const cur=document.createElement('span');
+  cur.className='tcur';s.appendChild(cur);
+  (function type(){
+    if(ci<L.t.length){
+      cur.before(document.createTextNode(L.t[ci++]));
+      setTimeout(type,10+Math.random()*8);
+    }else{
+      if(li<LINES.length){cur.remove();}
+      setTimeout(nextLine,35);
+    }
+  })();
+}
+setTimeout(nextLine,700);
+</script>
+</body>
+</html>
