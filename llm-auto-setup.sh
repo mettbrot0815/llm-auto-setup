@@ -649,13 +649,12 @@ step "Directories"
 mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" "$BIN_DIR" "$CONFIG_DIR" "$GUI_DIR"
 info "Directories ready."
 
-for _rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [[ -f "$_rc" ]] && ! grep -q "# llm-auto-setup PATH" "$_rc"; then
-        { echo ""; echo "# llm-auto-setup PATH"
-          echo "[[ \":\$PATH:\" != *\":$BIN_DIR:\"* ]] && export PATH=\"$BIN_DIR:\$PATH\""; } >> "$_rc"
-        info "Added $BIN_DIR to PATH in $_rc"
-    fi
-done
+# PATH wired to ~/.bashrc only — consistent with alias approach
+if ! grep -q "# llm-auto-setup PATH" "$HOME/.bashrc" 2>/dev/null; then
+    { echo ""; echo "# llm-auto-setup PATH"
+      echo '[[ ":$PATH:" != *":$BIN_DIR:"* ]] && export PATH="$BIN_DIR:$PATH"'; } >> "$HOME/.bashrc"
+    info "Added $BIN_DIR to PATH in ~/.bashrc"
+fi
 [[ ":$PATH:" != *":$BIN_DIR:"* ]] && export PATH="$BIN_DIR:$PATH"
 
 # =============================================================================
@@ -2172,9 +2171,6 @@ if ask_yes_no "Install Zsh + Oh My Zsh (syntax highlighting, autosuggestions, fz
             || sed -i 's/^plugins=(\(.*\))/plugins=(\1 fzf-tab)/' "$HOME/.zshrc" 2>/dev/null || true
     fi
 
-    # Note: LLM aliases are added to .zshrc in the ALIASES step below —
-    # ALIAS_FILE does not exist yet at this point in the script.
-
     ZSH_BIN=$(command -v zsh 2>/dev/null || true)
     if [[ -n "$ZSH_BIN" && "$SHELL" != "$ZSH_BIN" ]]; then
         ask_yes_no "  Set zsh as your default shell?" \
@@ -2504,13 +2500,13 @@ HELP
 # ─────────────────────────────────────────────────────────────────────────────
 ALIASES_EOF
 
-for _rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [[ -f "$_rc" ]] && ! grep -q "source $ALIAS_FILE" "$_rc"; then
-        { echo ""; echo "# Local LLM aliases"
-          echo "[ -f $ALIAS_FILE ] && source $ALIAS_FILE"; } >> "$_rc"
-        info "Aliases added to $_rc"
-    fi
-done
+# Bash only — Ubuntu default shell, matches the rest of the script.
+# Zsh users: add one line to ~/.zshrc:  [ -f $ALIAS_FILE ] && source $ALIAS_FILE
+if ! grep -q "source $ALIAS_FILE" "$HOME/.bashrc" 2>/dev/null; then
+    { echo ""; echo "# Local LLM aliases — llm-auto-setup"
+      echo "[ -f $ALIAS_FILE ] && source $ALIAS_FILE"; } >> "$HOME/.bashrc"
+    info "Aliases added to ~/.bashrc"
+fi
 
 # =============================================================================
 # STEP 15 — FINAL VALIDATION
@@ -2710,27 +2706,38 @@ echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-help${NC}      Show full command refer
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}└────────────────────────────────────────────────────────────────┘${NC}"
 
-# ── First steps ───────────────────────────────────────────────────────────────
+# ── Activation ───────────────────────────────────────────────────────────────
+# exec bash replaces the current shell process in-place: same terminal window,
+# same working directory, .bashrc reloaded, all aliases live immediately.
 echo ""
-echo -e "  ${GREEN}  First steps:${NC}"
-echo -e "    1.  Open a new terminal  ${CYAN}(aliases load automatically)${NC}"
-echo -e "    2.  ${YELLOW}chat${NC}            → browser chat at http://localhost:8090"
-echo -e "    3.  ${YELLOW}webui${NC}           → full Open WebUI at http://localhost:8080"
-echo -e "    4.  ${YELLOW}run-model${NC}       → quick CLI test of your model"
-is_wsl2 && echo -e "    ⚠  After reboot, run ${YELLOW}ollama-start${NC} before opening any UI"
+echo -e "${GREEN}  ╔═══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}  ║                                                               ║${NC}"
+echo -e "${GREEN}  ║   Activate aliases in this terminal:                         ║${NC}"
+echo -e "${GREEN}  ║                                                               ║${NC}"
+echo -e "${GREEN}  ║          ${YELLOW}exec bash${GREEN}                                          ║${NC}"
+echo -e "${GREEN}  ║                                                               ║${NC}"
+echo -e "${GREEN}  ║   Same window. Same directory. Zero friction.                ║${NC}"
+echo -e "${GREEN}  ╚═══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${CYAN}Then:${NC}"
+echo -e "    ${YELLOW}chat${NC}       → http://localhost:8090  (Neural Terminal)"
+echo -e "    ${YELLOW}webui${NC}      → http://localhost:8080  (Open WebUI)"
+echo -e "    ${YELLOW}run-model${NC}  → quick CLI test"
+echo -e "    ${YELLOW}llm-help${NC}   → all commands"
+is_wsl2 && { echo ""; echo -e "  ${YELLOW}  WSL2:${NC} after reboot run ${YELLOW}ollama-start${NC} before using any UI"; }
 echo ""
 
 # ── Troubleshooting ───────────────────────────────────────────────────────────
 if (( WARN_COUNT > 0 )); then
     echo -e "  ${YELLOW}┌──────────────────────  TROUBLESHOOTING  ────────────────────┐${NC}"
     (( HAS_NVIDIA )) && \
-    echo -e "  ${YELLOW}│${NC}  CUDA not found  →  sudo ldconfig && source ~/.bashrc       ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  CUDA not found  →  sudo ldconfig && exec bash               ${YELLOW}│${NC}"
     (( HAS_AMD_GPU )) && \
-    echo -e "  ${YELLOW}│${NC}  ROCm not found  →  source ~/.bashrc  (then: hipconfig -v)  ${YELLOW}│${NC}"
-    echo -e "  ${YELLOW}│${NC}  Ollama offline  →  ollama-start                            ${YELLOW}│${NC}"
-    echo -e "  ${YELLOW}│${NC}  UI won't load   →  ollama-start, wait 5 s, reopen browser  ${YELLOW}│${NC}"
-    echo -e "  ${YELLOW}│${NC}  llama-cpp err   →  source ~/.bashrc && run-model hello      ${YELLOW}│${NC}"
-    echo -e "  ${YELLOW}│${NC}  cowork crash    →  re-run setup (setuptools will reinstall) ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  ROCm not found  →  exec bash  (then: hipconfig --version)   ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  Ollama offline  →  ollama-start                             ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  UI won't load   →  ollama-start, wait 5 s, reopen browser   ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  llama-cpp err   →  exec bash && run-model hello              ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  cowork crash    →  re-run setup (setuptools will reinstall)  ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}└──────────────────────────────────────────────────────────────┘${NC}"
     echo ""
 fi
