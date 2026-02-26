@@ -722,12 +722,11 @@ if (( HAS_NVIDIA )); then
         local bin_dir="$base_dir/bin"
         [[ -d "$bin_dir" ]] && { export PATH="$bin_dir:$PATH"; info "CUDA bin: $bin_dir"; }
 
-        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-            [[ -f "$rc" ]] && ! grep -q "# CUDA toolkit — llm-auto-setup" "$rc" && {
-                { echo ""; echo "# CUDA toolkit — llm-auto-setup"
-                  [[ -d "$bin_dir" ]] && echo "export PATH=\"${bin_dir}:\$PATH\""
-                  echo "export LD_LIBRARY_PATH=\"${lib_dir}:\${LD_LIBRARY_PATH:-}\""; } >> "$rc"; }
-        done
+        _RC="$HOME/.bashrc"
+        ! grep -q "# CUDA toolkit — llm-auto-setup" "$_RC" 2>/dev/null && {
+            { echo ""; echo "# CUDA toolkit — llm-auto-setup"
+              [[ -d "$bin_dir" ]] && echo "export PATH=\"${bin_dir}:\$PATH\""
+              echo "export LD_LIBRARY_PATH=\"${lib_dir}:\${LD_LIBRARY_PATH:-}\""; } >> "$_RC"; }
         return 0
     }
 
@@ -794,15 +793,14 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
         [[ -z "$rocm_lib" ]] && rocm_lib="/opt/rocm/lib"   # best guess
         export LD_LIBRARY_PATH="$rocm_lib:${LD_LIBRARY_PATH:-}"
         export PATH="/opt/rocm/bin:$PATH"
-        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-            [[ -f "$rc" ]] && ! grep -q "# ROCm — llm-auto-setup" "$rc" && {
-                # printf with single-quoted format: $PATH stays literal (expands at shell startup).
-                # $rocm_lib expands now (we want the real path baked in).
-                printf '\n# ROCm — llm-auto-setup\n' >> "$rc"
-                printf 'export PATH="/opt/rocm/bin:$PATH"\n' >> "$rc"
-                printf 'export LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' "$rocm_lib" >> "$rc"
-            }
-        done
+        _RC="$HOME/.bashrc"
+        ! grep -q "# ROCm — llm-auto-setup" "$_RC" 2>/dev/null && {
+            # printf with single-quoted format: $PATH stays literal (expands at shell startup).
+            # $rocm_lib expands now (we want the real path baked in).
+            printf '\n# ROCm — llm-auto-setup\n' >> "$_RC"
+            printf 'export PATH="/opt/rocm/bin:$PATH"\n' >> "$_RC"
+            printf 'export LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' "$rocm_lib" >> "$_RC"
+        }
         info "ROCm env configured: $rocm_lib"
     }
 
@@ -2134,62 +2132,7 @@ echo ""
 echo -e "  ${CYAN}Tools are grouped so you can skip what you don't need.${NC}"
 echo ""
 
-# ── Group 1: Terminal shell (zsh + oh-my-zsh) ─────────────────────────────────
-if ask_yes_no "Install Zsh + Oh My Zsh (syntax highlighting, autosuggestions, fzf tab)?"; then
-    sudo apt-get install -y zsh zsh-common \
-        || warn "zsh install failed."
-
-    if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        info "Installing Oh My Zsh…"
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
-            "" --unattended </dev/null \
-            || warn "Oh My Zsh install returned non-zero."
-    else
-        info "Oh My Zsh already installed."
-    fi
-
-    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
-    for _repo in "zsh-users/zsh-syntax-highlighting" "zsh-users/zsh-autosuggestions"; do
-        _name="${_repo##*/}"
-        _dir="$ZSH_CUSTOM/plugins/$_name"
-        if [[ ! -d "$_dir" ]]; then
-            retry 2 5 git clone "https://github.com/${_repo}.git" "$_dir"                 || warn "Failed to clone $_name — zsh plugin may not work."
-        else
-            info "$_name already present."
-        fi
-    done
-
-    # fzf + fzf-tab for fuzzy completions
-    if ask_yes_no "  Also install fzf + fzf-tab (fuzzy file/history/tab search)?"; then
-        sudo apt-get install -y fzf 2>/dev/null \
-            || { retry 2 5 git clone --depth 1 https://github.com/junegunn/fzf.git "$TEMP_DIR/fzf" \
-                && "$TEMP_DIR/fzf/install" --all --no-bash --no-fish --no-update-rc </dev/null; } \
-            || warn "fzf install failed."
-        _ftdir="$ZSH_CUSTOM/plugins/fzf-tab"
-        if [[ ! -d "$_ftdir" ]]; then
-            retry 2 5 git clone https://github.com/Aloxaf/fzf-tab "$_ftdir"                 || warn "Failed to clone fzf-tab — tab completions won't work."
-        fi
-    fi
-
-    # Patch .zshrc with plugins
-    if [[ -f "$HOME/.zshrc" ]]; then
-        grep -q "zsh-syntax-highlighting" "$HOME/.zshrc" \
-            || sed -i 's/^plugins=(\(.*\))/plugins=(\1 zsh-syntax-highlighting zsh-autosuggestions)/' \
-               "$HOME/.zshrc" 2>/dev/null || true
-        grep -q "fzf-tab" "$HOME/.zshrc" \
-            || sed -i 's/^plugins=(\(.*\))/plugins=(\1 fzf-tab)/' "$HOME/.zshrc" 2>/dev/null || true
-    fi
-
-    ZSH_BIN=$(command -v zsh 2>/dev/null || true)
-    if [[ -n "$ZSH_BIN" && "$SHELL" != "$ZSH_BIN" ]]; then
-        ask_yes_no "  Set zsh as your default shell?" \
-            && { chsh -s "$ZSH_BIN" && info "Default shell changed to zsh." \
-                 || warn "chsh failed — run manually: chsh -s $ZSH_BIN"; }
-    fi
-    info "Zsh + Oh My Zsh: done."
-fi
-
-# ── Group 2: Terminal multiplexer ─────────────────────────────────────────────
+# ── Group 1: Terminal multiplexer ────────────────────────────────────────────
 if ask_yes_no "Install tmux (terminal multiplexer — split panes, detach sessions)?"; then
     sudo apt-get install -y tmux \
         || warn "tmux install failed."
@@ -2217,10 +2160,11 @@ TMUXCFG
     fi
 fi
 
-# ── Group 3: Modern CLI tools ─────────────────────────────────────────────────
-if ask_yes_no "Install modern CLI tools (bat, eza, ripgrep, fd, btop, ncdu, jq, micro)?"; then
+# ── Group 2: Modern CLI tools ────────────────────────────────────────────────
+if ask_yes_no "Install modern CLI tools (bat, eza, fzf, ripgrep, fd, btop, ncdu, jq, micro)?"; then
     CLI_PKGS=(
         bat            # better cat — syntax highlighted output
+        fzf            # fuzzy finder — Ctrl-R history search, file search
         ripgrep        # rg — blazing-fast grep
         fd-find        # fd — simpler find
         btop           # beautiful system/GPU/CPU monitor (replaces htop)
@@ -2264,9 +2208,9 @@ if ask_yes_no "Install modern CLI tools (bat, eza, ripgrep, fd, btop, ncdu, jq, 
         fi
     fi
 
-    # Handy aliases for the new tools
-    for _rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        [[ -f "$_rc" ]] && ! grep -q "# llm-qol-aliases" "$_rc" && cat >> "$_rc" <<'QOLALIASES'
+    # Handy aliases for the new tools — bash only
+    if ! grep -q "# llm-qol-aliases" "$HOME/.bashrc" 2>/dev/null; then
+        cat >> "$HOME/.bashrc" <<'QOLALIASES'
 
 # ── QoL tool aliases (llm-auto-setup) ─────────────────────────────────────
 # shellcheck disable=SC2154
@@ -2279,11 +2223,11 @@ command -v fdfind    &>/dev/null && ! command -v fd &>/dev/null && alias fd='fdf
 #       many system scripts depend on POSIX find behaviour.
 # llm-qol-aliases
 QOLALIASES
-    done
+    fi
     info "Modern CLI tools installed."
 fi
 
-# ── Group 4: GUI tools (only if display available) ────────────────────────────
+# ── Group 3: GUI tools (only if display available) ────────────────────────────
 HAVE_DISPLAY=0
 [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]] && HAVE_DISPLAY=1
 grep -qi microsoft /proc/version 2>/dev/null && HAVE_DISPLAY=1  # WSL2 with WSLg
@@ -2308,7 +2252,7 @@ else
     info "  If running WSL2: install VcXsrv or enable WSLg for GUI support."
 fi
 
-# ── Group 5: System info / fun ────────────────────────────────────────────────
+# ── Group 4: System info / fun ──────────────────────────────────────────────
 if ask_yes_no "Install neofetch (system info banner) and fastfetch?"; then
     sudo apt-get install -y neofetch 2>/dev/null || true
     # fastfetch — faster and more feature-rich than neofetch
@@ -2490,17 +2434,20 @@ run-model() {
 llm-help() {
     cat <<'HELP'
 Local LLM commands:
-  ollama-pull <model>    Download an Ollama model
-  ollama-run  <model>    Run an Ollama model interactively
-  gguf-run <file> [txt]  Run a GGUF model
-    --gpu-layers N       GPU layers
-    --threads N          CPU threads
-    --batch N            Batch size
-    --ctx N              Context window
-  ask / run-model        Shorthand for default model
-  llm-status             Show models + hardware config
-  chat / llm-chat        Open Neural Terminal at http://localhost:8090
-  webui / llm-web        Start Open WebUI at http://localhost:8080
+  chat                   Open Neural Terminal at http://localhost:8090
+  webui                  Open WebUI at http://localhost:8080
+  run-model / ask        Run default GGUF model from CLI
+  ollama-pull <tag>      Download an Ollama model
+  ollama-run  <tag>      Run an Ollama model interactively
+  ollama-list            List downloaded Ollama models
+  ollama-start           Start the Ollama backend
+  gguf-run <file> [txt]  Run a raw GGUF via llama-cpp
+    --gpu-layers N         GPU layers
+    --threads N            CPU threads
+    --batch N              Batch size
+    --ctx N                Context window
+  gguf-list              List downloaded GGUF files
+  llm-status             Show models, disk, and hardware config
   cowork                 Open Interpreter — AI that runs code + manages files
   ai / aider             AI pair programmer with git integration
   llm-help               This help
@@ -2510,7 +2457,6 @@ HELP
 ALIASES_EOF
 
 # Bash only — Ubuntu default shell, matches the rest of the script.
-# Zsh users: add one line to ~/.zshrc:  [ -f $ALIAS_FILE ] && source $ALIAS_FILE
 if ! grep -q "source $ALIAS_FILE" "$HOME/.bashrc" 2>/dev/null; then
     { echo ""; echo "# Local LLM aliases — llm-auto-setup"
       echo "[ -f $ALIAS_FILE ] && source $ALIAS_FILE"; } >> "$HOME/.bashrc"
