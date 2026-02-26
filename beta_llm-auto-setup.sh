@@ -2,23 +2,31 @@
 
 # ==============================================================================
 # SYSTEM SETUP SCRIPT FOR LLM INFRASTRUCTURE — SECURE, RELIABLE & ADAPTABLE
-# Version: 1.3 (2026-02-26)
+# Version: 1.5 (2026-02-26)
 # Save to /opt/llm-setup.sh after install for version control and auditability.
+# Primary WebUI: Jan.ai (offline, secure, open-source)
 # ==============================================================================
 
 set -euo pipefail  # Exit on error, undefined vars, or pipeline failure
 
-SCRIPT_VERSION="1.3"
-ERROR_LOG="/var/log/llm-setup-error.log"
-TEMP_DIR="/tmp/llm-setup-$(date +%s)"
-MODEL_LIST_URL="https://ollama.com/library"
+SCRIPT_VERSION="1.5"
+ERROR_LOG="$HOME/.llm-setup-error.log"  # ✅ User home directory — no permission issues
 
 # === CONFIGURATION CONSTANTS ===
 DEFAULT_TIMEOUT=300  # 5-minute timeout for long-running commands
 
-# Hardware detection (RAM, GPU)
+# Hardware detection (RAM, GPU) with fallbacks
 TOTAL_RAM_GB=$(free -m | awk '/Mem:/ {print $2 / 1024}')
-GPU_INFO=$(lspci | grep -i "vga\|3d" || echo "Unknown")
+GPU_INFO="Unknown"
+
+# Check for NVIDIA GPU via nvidia-smi — if not present, fall back to glxinfo or skip
+if command -v nvidia-smi &>/dev/null; then
+    GPU_INFO=$(nvidia-smi --query-gpu=product --format=csv,noheader,nounits | head -1)
+elif command -v glxinfo &>/dev/null; then
+    GPU_INFO=$(glxinfo | grep "OpenGL renderer" | awk '{print $3}')
+else
+    log_warn "No GPU detection available. Skipping GPU info."
+fi
 
 # === HELPER FUNCTIONS ===
 log_info() {
@@ -57,6 +65,7 @@ if [[ $(lscpu | grep -i avx) ]]; then
     HAS_AVX2=1
 fi
 
+# Optional: Check for AVX2 support via a fallback (e.g., lscpu or cat /proc/cpuinfo)
 if [ $HAS_AVX2 -eq 1 ]; then
     PKGS+=(libopenblas-dev)
     log_info "AVX2 detected. Installing libopenblas-dev for CPU-accelerated math."
@@ -84,7 +93,7 @@ if ! command -v ollama &>/dev/null; then
 
     # Download and verify install.sh (placeholder hash — real use requires actual SHA256)
     INSTALL_URL="https://ollama.com/install.sh"
-    EXPECTED_HASH="a1b2c3d4e5f6"  # Replace with actual Ollama hash
+    EXPECTED_HASH="a1b2c3d or more"  # To be replaced with actual hash
     TEMP_SCRIPT="/tmp/ollama-install.sh"
 
     curl -fsSL "$INSTALL_URL" --fail --max-time $DEFAULT_TIMEOUT > "$TEMP_SCRIPT"
@@ -126,21 +135,89 @@ fi
 export OLLAMA_PARALLEL="$OLLAMA_PARALLEL"
 log_info "Set OLLAMA_PARALLEL to $OLLAMA_PARALLEL. This improves performance with available RAM."
 
-# === STEP 4: INSTALL QUALITY-OF-LIFE TOOLS ===
-log_info "Installing quality-of-life tools..."
+# === STEP 4: INSTALL JAN.AI AS PRIMARY WEBUI ===
+log_info "Installing Jan.ai as the primary AI web interface..."
 
+if ! command -v docker &>/dev/null; then
+    log_warn "Docker not found. Installing Docker Engine..."
+    if [ "$(uname)" = "Linux" ]; then
+        curl -fsSL https://get.docker.com | sh
+        sudo usermod -aG docker $USER || {
+            log_error "Failed to add user to docker group. Please manually run: sudo usermod -aG docker $USER"
+            exit 1
+        }
+    else
+        log_error "Docker not supported on this OS. Only Linux is supported for Jan.ai."
+        exit 1
+    fi
+fi
+
+# Verify Docker is running
+if ! docker info &>/dev/null; then
+    log_error "Failed to connect to Docker. Please install Docker first."
+    exit 1
+fi
+
+# Use latest release from GitHub (v0.6.8 or newer)
+JAN_REPO="https://github.com/menloresearch/jan/releases/latest"
+JAN_TAG=$(curl -s "$JAN_REPO" | grep -o 'tag/v[0-9\.]*' | head -n1)
+
+if [ -z "$JAN_TAG" ]; then
+    log_error "Could not determine latest Jan.ai release tag. Aborting."
+    exit 1
+fi
+
+log_info "Downloading Jan.ai from $JAN_REPO (Tag: $JAN_TAG)"
+
+# Deploy via Docker Compose
+cat > /tmp/jan-compose.yml << 'EOL'
+version: '3.8'
+
+services:
+  jan-server:
+    image: menloresearch/jan:${JAN_TAG}
+    container_name: jan-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      - OLLAMA_HOST=127.0.0.1:11434
+      - JAN_LOG_LEVEL=info
+    volumes:
+      - ./jan-data:/app/data
+    networks:
+      - jan-network
+
+networks:
+  jan-network:
+EOL
+
+log_info "Deploying Jan.ai server with Docker Compose..."
+if ! docker compose --file /tmp/jan-compose.yml up -d; then
+    log_error "Failed to start Jan.ai server. Check logs at $ERROR_LOG"
+    exit 1
+fi
+
+log_info "✅ Jan.ai is now running on http://localhost:8080"
+
+# === STEP 5: INSTALL ADDITIONAL TOOLS (OPTIONAL) ===
+if [ "$#" -gt 0 ] && [[ $1 == "--install-open-webui" ]]; then
+    log_info "Installing Open WebUI..."
+    curl -fsSL https://raw.githubusercontent.com/openwebui/openwebui/main/install.sh | bash
+else
+    log_warn "Open WebUI not installed. Use: --install-open-webui to enable."
+fi
+
+# Neofetch / Fastfetch (as fallback)
 if ! command -v neofetch &>/dev/null; then
-    log_info "Installing neofetch..."
     sudo apt-get install -y neofetch || {
         log_error "Failed to install neofetch. Aborting."
         exit 1
     }
 fi
 
-# Fastfetch via snap or APT fallback
 if ! command -v fastfetch &>/dev/null; then
     if command -v snap &>/dev/null; then
-        log_info "Installing fastfetch via snap..."
         sudo snap install fastfetch --classic || {
             log_warn "Snap failed. Trying APT fallback."
             sudo apt-get install -y fastfetch || {
@@ -152,41 +229,12 @@ if ! command -v fastfetch &>/dev/null; then
         log_warn "Snap not installed. Installing via APT fallback..."
         sudo apt-get install -y fastfetch || {
             log_error "Failed to install fastfetch via APT. Aborting."
-            exit ; 
-        }
-    fi
-fi
-
-log_info "Quality-of-life tools: neofetch and fastfetch installed successfully."
-
-# === STEP 5: INSTALL OPEN INTERPRETER (AUTONOMOUS COWORKING) ===
-log_info "Installing Open Interpreter for autonomous workflow execution..."
-
-if ! command -v openinterpreter &>/dev/null; then
-    log_info "Open Interpreter not found. Installing via Ollama or pip..."
-    
-    # Try Ollama first: Install the model if available (e.g., 'openinterpreter')
-    if ollama list | grep -q "openinterpreter"; then
-        log_info "OpenInterpreter model already exists in Ollama."
-    else
-        log_info "Installing OpenInterpreter model via Ollama..."
-        ollama pull openinterpreter || {
-            log_error "Failed to install 'openinterpreter' model. Aborting."
             exit 1
         }
     fi
-
-    # Install Python package (if not already present)
-    pip3 install openinterpreter || {
-        log_error "Failed to install openinterpreter CLI tool via pip."
-        exit 1
-    }
-
-else
-    log_info "Open Interpreter is already installed."
 fi
 
-log_info "✅ Autonomous coworking tools (Open Interpreter) are now available."
+log_info "✅ Optional tools: neofetch and fastfetch installed successfully."
 
 # === STEP 6: MODEL RECOMMENDATIONS BASED ON RAM & HARDWARE ===
 log_info "Generating model recommendations based on your hardware..."
@@ -256,6 +304,8 @@ if command -v ollama; then
     log_info "Ollama is ready. Run 'ollama list' to see installed models."
 fi
 
+log_info "👉 Jan.ai is now running at http://localhost:8080"
+
 # Show system info (for debugging)
 neofetch 2>/dev/null || fastfetch 2>/dev/null || {
     log_warn "Could not run neofetch or fastfetch — required for visual feedback."
@@ -272,14 +322,15 @@ else
 #!/bin/bash
 # ==============================================================================
 # SYSTEM SETUP SCRIPT FOR LLM INFRASTRUCTURE — SECURE, RELIABLE & ADAPTABLE
-# Version: 1.3 (2026-02-26)
+# Version: 1.5 (2026-02-26)
 # Save to /opt/llm-setup.sh after install for version control and auditability.
+# Primary WebUI: Jan.ai (offline, secure, open-source)
 # ==============================================================================
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.3"
-ERROR_LOG="/var/log/llm-setup-error.log"
+SCRIPT_VERSION="1.5"
+ERROR_LOG="$HOME/.llm-setup-error.log"
 
 # [Full content of this script pasted here]
 EOL
