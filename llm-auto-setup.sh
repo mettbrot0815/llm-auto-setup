@@ -1118,6 +1118,15 @@ MODELFILE
     popd >/dev/null
 fi
 
+# ── Ensure OLLAMA_TAG is always in config ─────────────────────────────────────
+# If the user skipped the download, OLLAMA_TAG was never derived or written.
+# Derive it from the filename now so cowork / aider / llm-switch always have it.
+if ! grep -q "^OLLAMA_TAG=" "$MODEL_CONFIG" 2>/dev/null; then
+    _derived_tag=$(basename "${M[file]}" .gguf                    | sed -E 's/-([Qq][0-9].*)$/:\1/'                    | tr '[:upper:]' '[:lower:]')
+    echo "OLLAMA_TAG=\"$_derived_tag\"" >> "$MODEL_CONFIG"
+    info "OLLAMA_TAG saved to config: $_derived_tag"
+fi
+
 # =============================================================================
 # STEP 12 — HELPER SCRIPTS
 # =============================================================================
@@ -1208,15 +1217,181 @@ echo ""; echo "=== Disk ==="
 du -sh ~/local-llm-models 2>/dev/null || echo "  (no models dir)"
 if [[ -f ~/.config/local-llm/selected_model.conf ]]; then
     echo ""; echo "=== Active Config ==="
-    # shellcheck source=/dev/null
-    source ~/.config/local-llm/selected_model.conf
-    echo "  Model:      ${MODEL_NAME:-?}  (${MODEL_SIZE:-?})"
-    echo "  GPU layers: ${GPU_LAYERS:-?}  CPU layers: ${CPU_LAYERS:-?}"
-    echo "  Threads:    ${HW_THREADS:-?}  Batch: ${BATCH:-?}"
-    echo "  File:       ${MODEL_FILENAME:-?}"
+    # Read individual keys — do NOT source (avoids polluting env with BATCH etc.)
+    _cfg=~/.config/local-llm/selected_model.conf
+    _cfgread() { grep "^${1}=" "$_cfg" 2>/dev/null | head -1 | cut -d'"' -f2; }
+    echo "  Model:      $(_cfgread MODEL_NAME)  ($(_cfgread MODEL_SIZE))"
+    echo "  GPU layers: $(_cfgread GPU_LAYERS)  CPU layers: $(_cfgread CPU_LAYERS)"
+    echo "  Threads:    $(_cfgread HW_THREADS)  Batch: $(_cfgread BATCH)"
+    echo "  Ollama tag: $(_cfgread OLLAMA_TAG)"
+    echo "  File:       $(_cfgread MODEL_FILENAME)"
 fi
 INFOEOF
 chmod +x "$BIN_DIR/local-models-info"
+
+# ── llm-stop ──────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/llm-stop" <<'STOP_EOF'
+#!/usr/bin/env bash
+# llm-stop — stop Ollama (and optionally the WebUI server)
+if grep -qi microsoft /proc/version 2>/dev/null; then
+    if pgrep -f "ollama serve" >/dev/null 2>&1; then
+        pkill -f "ollama serve" 2>/dev/null && echo "✔ Ollama stopped." || echo "Could not stop Ollama."
+    else
+        echo "Ollama is not running."
+    fi
+    if pgrep -f "open-webui" >/dev/null 2>&1; then
+        pkill -f "open-webui" 2>/dev/null && echo "✔ Open WebUI stopped." || true
+    fi
+else
+    if systemctl is-active --quiet ollama 2>/dev/null; then
+        sudo systemctl stop ollama && echo "✔ Ollama service stopped." || echo "Could not stop Ollama service."
+    else
+        echo "Ollama service is not active."
+    fi
+fi
+STOP_EOF
+chmod +x "$BIN_DIR/llm-stop"
+
+# ── llm-update ────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/llm-update" <<'UPDATE_EOF'
+#!/usr/bin/env bash
+# llm-update — upgrade Ollama, Open WebUI, and pull the latest model tag
+set -uo pipefail
+
+OWUI_VENV="$HOME/.local/share/open-webui-venv"
+CONFIG="$HOME/.config/local-llm/selected_model.conf"
+
+echo ""
+echo "═══════════════════════════════════════════"
+echo "  LLM Stack Updater"
+echo "═══════════════════════════════════════════"
+echo ""
+
+# ── Ollama ────────────────────────────────────────────────────────────────────
+echo "[ 1/3 ] Updating Ollama…"
+if curl -fsSL https://ollama.com/install.sh | sh; then
+    echo "  ✔ Ollama updated: $(ollama --version 2>/dev/null || echo 'ok')"
+else
+    echo "  ✘ Ollama update failed — check internet connection."
+fi
+
+# ── Open WebUI ────────────────────────────────────────────────────────────────
+echo ""
+echo "[ 2/3 ] Updating Open WebUI…"
+if [[ -d "$OWUI_VENV" ]]; then
+    OLD_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "?")
+    "$OWUI_VENV/bin/pip" install --upgrade open-webui --quiet \
+        && NEW_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "?") \
+        && echo "  ✔ Open WebUI: $OLD_VER → $NEW_VER" \
+        || echo "  ✘ Open WebUI update failed."
+else
+    echo "  ✘ Open WebUI venv not found — run setup script first."
+fi
+
+# ── Ollama model ──────────────────────────────────────────────────────────────
+echo ""
+echo "[ 3/3 ] Pulling latest model tag…"
+OLLAMA_TAG=""
+[[ -f "$CONFIG" ]] && OLLAMA_TAG=$(grep "^OLLAMA_TAG=" "$CONFIG" | head -1 | cut -d'"' -f2)
+if [[ -n "$OLLAMA_TAG" ]]; then
+    # Ensure Ollama is running for the pull
+    if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        echo "  Starting Ollama for model pull…"
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            command -v ollama-start &>/dev/null && ollama-start || nohup ollama serve >/dev/null 2>&1 &
+        else
+            sudo systemctl start ollama 2>/dev/null || nohup ollama serve >/dev/null 2>&1 &
+        fi
+        sleep 3
+    fi
+    ollama pull "$OLLAMA_TAG" \
+        && echo "  ✔ Model up to date: $OLLAMA_TAG" \
+        || echo "  ✘ ollama pull failed — check internet connection."
+else
+    echo "  ✘ No OLLAMA_TAG in config — skipping model pull."
+fi
+
+echo ""
+echo "Done. Restart services with: ollama-start && llm-web"
+echo ""
+UPDATE_EOF
+chmod +x "$BIN_DIR/llm-update"
+
+# ── llm-switch ────────────────────────────────────────────────────────────────
+# Re-runs just the model picker + layer calculation, no full reinstall
+cat > "$BIN_DIR/llm-switch" <<'SWITCH_EOF'
+#!/usr/bin/env bash
+# llm-switch — change active model without re-running full setup
+set -uo pipefail
+
+CONFIG="$HOME/.config/local-llm/selected_model.conf"
+GGUF_DIR="$HOME/local-llm-models/gguf"
+
+echo ""
+echo "═══════════════════════════════════════════"
+echo "  LLM Model Switcher"
+echo "═══════════════════════════════════════════"
+
+# ── Show current model ────────────────────────────────────────────────────────
+if [[ -f "$CONFIG" ]]; then
+    _cur=$(grep "^MODEL_NAME=" "$CONFIG" | cut -d'"' -f2)
+    _tag=$(grep "^OLLAMA_TAG=" "$CONFIG" | cut -d'"' -f2)
+    echo "  Current: $_cur  [$_tag]"
+fi
+echo ""
+
+# ── Ensure Ollama is running so 'ollama list' works ───────────────────────────
+if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    echo "  Ollama not running — starting it…"
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        command -v ollama-start &>/dev/null && ollama-start || nohup ollama serve >/dev/null 2>&1 &
+    else
+        sudo systemctl start ollama 2>/dev/null || nohup ollama serve >/dev/null 2>&1 &
+    fi
+    for i in {1..10}; do
+        curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+        sleep 1
+    done
+fi
+
+# ── Build picker from what's actually registered in Ollama ───────────────────
+echo "  Available Ollama models:"
+mapfile -t TAGS < <(ollama list 2>/dev/null | awk 'NR>1{print $1}')
+if [[ ${#TAGS[@]} -eq 0 ]]; then
+    echo "  (none — download a model first: ollama pull qwen3:8b)"
+    echo "  Or re-run the setup script to download the auto-selected model."
+    exit 0
+fi
+for i in "${!TAGS[@]}"; do
+    printf "    %2d)  %s\n" "$((i+1))" "${TAGS[$i]}"
+done
+echo ""
+read -r -p "  Choice [1-${#TAGS[@]}] (or Enter to cancel): " choice
+[[ -z "$choice" ]] && echo "Cancelled." && exit 0
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#TAGS[@]} )); then
+    echo "Invalid choice." && exit 1
+fi
+NEW_TAG="${TAGS[$((choice-1))]}"
+
+# ── Update config ─────────────────────────────────────────────────────────────
+if [[ -f "$CONFIG" ]]; then
+    # Replace OLLAMA_TAG line (or append if missing)
+    if grep -q "^OLLAMA_TAG=" "$CONFIG"; then
+        sed -i "s|^OLLAMA_TAG=.*|OLLAMA_TAG=\"$NEW_TAG\"|" "$CONFIG"
+    else
+        echo "OLLAMA_TAG=\"$NEW_TAG\"" >> "$CONFIG"
+    fi
+    # Also update MODEL_NAME for display purposes
+    sed -i "s|^MODEL_NAME=.*|MODEL_NAME=\"$NEW_TAG\"|" "$CONFIG"
+fi
+
+echo ""
+echo "  ✔ Switched to: $NEW_TAG"
+echo "  Run: ollama-run $NEW_TAG   or   webui   to start chatting."
+echo ""
+SWITCH_EOF
+chmod +x "$BIN_DIR/llm-switch"
+
 info "Helper scripts written."
 
 # =============================================================================
@@ -1969,7 +2144,14 @@ if [[ ! -f "$HTML_FILE" ]]; then
 fi
 
 # ── Ensure Ollama is running ──────────────────────────────────────────────────
-if ! pgrep -f "ollama serve" >/dev/null 2>&1; then
+_ollama_running() {
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        pgrep -f "ollama serve" >/dev/null 2>&1
+    else
+        systemctl is-active --quiet ollama 2>/dev/null
+    fi
+}
+if ! _ollama_running; then
     echo "→ Ollama not running — starting it…"
     if [[ -x "$BIN_DIR/ollama-start" ]]; then
         "$BIN_DIR/ollama-start"
@@ -2048,6 +2230,9 @@ info "Installing open-webui (this can take 3-5 minutes)…"
 # No --quiet so errors are visible
 "$OWUI_VENV/bin/pip" install open-webui \
     || { warn "Open WebUI pip install failed. Check output above."; }
+OWUI_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "unknown")
+info "Open WebUI $OWUI_VER installed."
+info "  To upgrade later: llm-update"
 
 # For WSL2: bind 0.0.0.0 so Windows browser can reach it via localhost
 # For native Linux: 127.0.0.1 is fine
@@ -2091,9 +2276,20 @@ export USER_AGENT="open-webui/local"
 export CORS_ALLOW_ORIGIN="http://localhost:8080"
 
 # ── Start Ollama if not running ───────────────────────────────────────────────
-if ! pgrep -f "ollama serve" >/dev/null 2>&1; then
+_ollama_running() {
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        pgrep -f "ollama serve" >/dev/null 2>&1
+    else
+        systemctl is-active --quiet ollama 2>/dev/null
+    fi
+}
+if ! _ollama_running; then
     echo "→ Starting Ollama…"
-    "$BIN_DIR/ollama-start"
+    if [[ -x "$BIN_DIR/ollama-start" ]]; then
+        "$BIN_DIR/ollama-start"
+    else
+        nohup ollama serve >/dev/null 2>&1 &
+    fi
     echo "  Waiting for Ollama API…"
     for i in {1..15}; do
         curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
@@ -2313,20 +2509,36 @@ if [[ ! -x "$OI_VENV/bin/interpreter" ]]; then
     exit 1
 fi
 
-# Load model tag from config
+# Read OLLAMA_TAG from config without sourcing (avoids env pollution)
 OLLAMA_TAG=""
-[[ -f "$CONFIG" ]] && source "$CONFIG" 2>/dev/null || true
+if [[ -f "$CONFIG" ]]; then
+    OLLAMA_TAG=$(grep "^OLLAMA_TAG=" "$CONFIG" | head -1 | cut -d'"'  -f2)
+fi
 OLLAMA_TAG="${OLLAMA_TAG:-qwen_qwen3-14b:q4_k_m}"
 
-# Ensure Ollama is running
-if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+# WSL2-aware Ollama running check
+_ollama_running() {
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        pgrep -f "ollama serve" >/dev/null 2>&1
+    else
+        systemctl is-active --quiet ollama 2>/dev/null
+    fi
+}
+
+# Start Ollama if not running; track whether WE started it for cleanup
+STARTED_OLLAMA=0
+if ! _ollama_running; then
     echo "→ Ollama not running — starting it…"
     command -v ollama-start &>/dev/null && ollama-start || nohup ollama serve >/dev/null 2>&1 &
+    STARTED_OLLAMA=1
     for i in {1..15}; do
         curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
         sleep 1
     done
 fi
+
+# Clean exit: if we started Ollama ourselves, stop it when done
+trap \'[[ $STARTED_OLLAMA -eq 1 ]] && { echo ""; echo "Stopping Ollama (started by cowork)…"; kill $(pgrep -f "ollama serve" 2>/dev/null) 2>/dev/null || true; }; exit 0\' INT TERM EXIT
 
 echo ""
 echo "  ╔══════════════════════════════════════════════════╗"
@@ -2368,16 +2580,31 @@ if [[ ! -x "$AI_VENV/bin/aider" ]]; then
     exit 1
 fi
 
+# Read OLLAMA_TAG from config without sourcing (avoids env pollution)
 OLLAMA_TAG=""
-[[ -f "$CONFIG" ]] && source "$CONFIG" 2>/dev/null || true
+if [[ -f "$CONFIG" ]]; then
+    OLLAMA_TAG=$(grep "^OLLAMA_TAG=" "$CONFIG" | head -1 | cut -d'"'  -f2)
+fi
 OLLAMA_TAG="${OLLAMA_TAG:-qwen_qwen3-14b:q4_k_m}"
 
-# Ensure Ollama is running
-if ! curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+# WSL2-aware Ollama running check
+_ollama_running() {
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        pgrep -f "ollama serve" >/dev/null 2>&1
+    else
+        systemctl is-active --quiet ollama 2>/dev/null
+    fi
+}
+
+STARTED_OLLAMA=0
+if ! _ollama_running; then
     echo "→ Starting Ollama…"
     command -v ollama-start &>/dev/null && ollama-start || nohup ollama serve >/dev/null 2>&1 &
+    STARTED_OLLAMA=1
     sleep 3
 fi
+
+trap \'[[ $STARTED_OLLAMA -eq 1 ]] && { echo ""; echo "Stopping Ollama (started by aider)…"; kill $(pgrep -f "ollama serve" 2>/dev/null) 2>/dev/null || true; }; exit 0\' INT TERM EXIT
 
 echo ""
 echo "  ╔══════════════════════════════════════════════════╗"
@@ -2415,11 +2642,14 @@ alias ollama-pull='ollama pull'
 alias ollama-run='ollama run'
 alias gguf-list='local-models-info'
 alias gguf-run='run-gguf'
-alias ask='run-gguf'
+alias ask='run-model'   # run-model reads config + passes prompt; gguf-run takes a filepath
 alias llm-status='local-models-info'
 alias chat='llm-chat'
 alias webui='llm-web'
 alias ai='aider'
+alias llm-stop='llm-stop'
+alias llm-update='llm-update'
+alias llm-switch='llm-switch'
 
 run-model() {
     local cfg=~/.config/local-llm/selected_model.conf
@@ -2450,6 +2680,9 @@ Local LLM commands:
   llm-status             Show models, disk, and hardware config
   cowork                 Open Interpreter — AI that runs code + manages files
   ai / aider             AI pair programmer with git integration
+  llm-stop               Stop Ollama (and Open WebUI if running)
+  llm-update             Upgrade Ollama + Open WebUI + pull latest model
+  llm-switch             Switch active model (no full reinstall)
   llm-help               This help
 HELP
 }
@@ -2583,6 +2816,16 @@ else
     WARN_COUNT=$(( WARN_COUNT + 1 ))
 fi
 
+for _tool in llm-stop llm-update llm-switch; do
+    if [[ -x "$BIN_DIR/$_tool" ]]; then
+        info "✔ $_tool OK."
+        PASS=$(( PASS + 1 ))
+    else
+        warn "✘ $_tool missing from $BIN_DIR."
+        WARN_COUNT=$(( WARN_COUNT + 1 ))
+    fi
+done
+
 # =============================================================================
 # SUMMARY
 # =============================================================================
@@ -2655,6 +2898,11 @@ echo -e "  ${CYAN}│${NC}   ${YELLOW}ollama-list${NC}   List all downloaded Oll
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-status${NC}    Show models, disk usage, and config             ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}gguf-run${NC}      Run a raw GGUF file directly via llama-cpp      ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}gguf-list${NC}     List all downloaded GGUF files                  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Maintenance ─────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-stop${NC}      Stop Ollama backend                             ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama, Open WebUI, pull latest model   ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-switch${NC}    Change model (no reinstall needed)              ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Help ─────────────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-help${NC}      Show full command reference                     ${CYAN}│${NC}"
