@@ -1718,9 +1718,16 @@ echo ""
 # ── Helper tools ─────────────────────────────────────────────────────────────
 echo -e "${CYAN}[ Tools ]${NC}"
 BIN="$HOME/.local/bin"
-for t in llm-chat llm-stop llm-update llm-switch llm-add run-gguf local-models-info; do
+for t in llm-web llm-chat llm-stop llm-update llm-switch llm-add run-gguf local-models-info; do
     [[ -x "$BIN/$t" ]] && ok "$t" || fail "$t missing → re-run llm-setup"
 done
+OWUI_VENV_DR="$HOME/.local/share/open-webui-venv"
+if [[ -x "$OWUI_VENV_DR/bin/open-webui" ]]; then
+    OWUI_VER_DR=$("$OWUI_VENV_DR/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "?")
+    ok "Open WebUI $OWUI_VER_DR  ($OWUI_VENV_DR)"
+else
+    fail "Open WebUI not installed → re-run llm-setup"
+fi
 [[ -x "$BIN/cowork" ]] && ok "cowork (Open Interpreter)" || warn "cowork not installed"
 [[ -x "$BIN/aider" ]]  && ok "aider"                     || warn "aider not installed"
 echo ""
@@ -3503,6 +3510,14 @@ if [[ -x "$BIN_DIR/run-gguf" ]]; then
     PASS=$(( PASS + 1 ))
 else
     warn "✘ run-gguf missing from $BIN_DIR."
+    WARN_COUNT=$(( WARN_COUNT + 1 ))
+fi
+
+if [[ -x "$BIN_DIR/llm-web" ]]; then
+    info "✔ llm-web (Open WebUI launcher) OK."
+    PASS=$(( PASS + 1 ))
+else
+    warn "✘ llm-web launcher missing."
     WARN_COUNT=$(( WARN_COUNT + 1 ))
 fi
 
