@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v3.1.0
+# Local LLM Auto-Setup — Universal Edition v3.1.1
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04 — CPU-only through high-end GPU.
@@ -14,7 +14,7 @@
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="3.1.0"
+SCRIPT_VERSION="3.1.1"
 # Set this to your hosted URL to enable auto-update checks on each run:
 SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
@@ -1790,13 +1790,23 @@ if [[ -n "$JAN_NEW_TAG" && -n "$JAN_CURRENT" ]]; then
     JAN_NEW_VER="${JAN_NEW_TAG#v}"
     if [[ "$JAN_NEW_VER" != "$JAN_CURRENT" ]]; then
         echo "  Jan.ai: $JAN_CURRENT → $JAN_NEW_VER — downloading…"
-        JAN_DEB="jan-linux-amd64-${JAN_NEW_VER}.deb"
-        JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_NEW_TAG}/${JAN_DEB}"
+        # Fetch the amd64 .deb URL from the release asset list (robust to filename renames)
+        JAN_URL=$(curl -fsSL --max-time 8 \
+            "https://api.github.com/repos/janhq/jan/releases/latest" \
+            2>/dev/null \
+            | grep '"browser_download_url"' \
+            | grep '_amd64\.deb"' \
+            | head -1 | cut -d'"' -f4 || true)
+        JAN_DEB=$(basename "${JAN_URL:-jan.deb}")
+        if [[ -z "$JAN_URL" ]]; then
+            echo "  ✘ Could not find Jan.ai .deb asset — visit https://jan.ai/download"
+        else
         _TMP=$(mktemp /tmp/jan-XXXXX.deb)
         curl -fsSL --progress-bar -o "$_TMP" "$JAN_URL" \
             && sudo dpkg -i "$_TMP" && echo "  ✔ Jan.ai updated to $JAN_NEW_VER" \
             || echo "  ✘ Jan.ai update failed — visit https://jan.ai/download"
         rm -f "$_TMP"
+        fi
     else
         echo "  ✔ Jan.ai already at $JAN_CURRENT"
     fi
@@ -2970,10 +2980,21 @@ step "Jan.ai (primary Web/Desktop UI)"
 # They are safe to install on any Ubuntu 22.04/24.04 system; most are already
 # present. We install them unconditionally so Jan works on the first launch.
 info "Installing Jan.ai runtime dependencies (Electron / X11 / GTK)…"
+# Ubuntu 24.04 (noble) renamed two Electron deps via the t64 ABI transition:
+#   libasound2  → libasound2t64
+#   libgtk-3-0  → libgtk-3-0t64
+# All other deps kept their names across 22.04 and 24.04.
+if [[ "${UBUNTU_VERSION:-0}" == "24.04" ]]; then
+    _gtk3_pkg="libgtk-3-0t64"
+    _libasound_pkg="libasound2t64"
+else
+    _gtk3_pkg="libgtk-3-0"
+    _libasound_pkg="libasound2"
+fi
 JAN_DEPS=(
-    libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
+    "$_gtk3_pkg" libnotify4 libnss3 libxss1 libxtst6 xdg-utils
     libatspi2.0-0 libsecret-1-0 libx11-xcb1 libxcb-dri3-0
-    libasound2 libgbm1 libxshmfence1 libdrm2
+    "$_libasound_pkg" libgbm1 libxshmfence1 libdrm2
 )
 sudo apt-get install -y "${JAN_DEPS[@]}" 2>/dev/null \
     || warn "Some Jan runtime deps failed — Jan may not launch."
@@ -3006,9 +3027,20 @@ _install_jan() {
         warn "  Manual install: https://jan.ai/download  (Linux .deb)"
         return 1
     fi
-    JAN_VER="${JAN_TAG#v}"
-    JAN_DEB="jan-linux-amd64-${JAN_VER}.deb"
-    JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_TAG}/${JAN_DEB}"
+    # Fetch the amd64 .deb download URL directly from the release asset list.
+    # This is robust to filename format changes (Jan renamed assets in v0.7.x).
+    JAN_URL=$(curl -fsSL --max-time 8 \
+        "https://api.github.com/repos/janhq/jan/releases/latest" \
+        2>/dev/null \
+        | grep '"browser_download_url"' \
+        | grep '_amd64\.deb"' \
+        | head -1 | cut -d'"' -f4 || true)
+    JAN_DEB=$(basename "${JAN_URL:-jan.deb}")
+    if [[ -z "$JAN_URL" ]]; then
+        warn "Could not find Jan.ai amd64 .deb asset in GitHub release."
+        warn "  Manual install: https://jan.ai/download  (Linux .deb)"
+        return 1
+    fi
     info "Downloading Jan.ai ${JAN_TAG}…"
     if curl -fsSL --progress-bar -o "$TEMP_DIR/$JAN_DEB" "$JAN_URL"; then
         sudo dpkg -i "$TEMP_DIR/$JAN_DEB" 2>/dev/null \
