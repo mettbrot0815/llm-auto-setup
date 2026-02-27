@@ -109,9 +109,9 @@ command -v sudo &>/dev/null || error "sudo is required but not found. Install it
 # ── Architecture check ────────────────────────────────────────────────────────
 HOST_ARCH=$(uname -m)
 case "$HOST_ARCH" in
-    x86_64)  ARCH_OK=1 ;;
-    aarch64) ARCH_OK=1; warn "ARM64 detected — CUDA wheels unavailable; will build from source." ;;
-    *)       warn "Untested architecture: $HOST_ARCH. Proceeding anyway." ; ARCH_OK=1 ;;
+    x86_64)  : ;;
+    aarch64) warn "ARM64 detected — CUDA wheels unavailable; will build from source." ;;
+    *)       warn "Untested architecture: $HOST_ARCH. Proceeding anyway." ;;
 esac
 
 # ── Distro check ──────────────────────────────────────────────────────────────
@@ -192,12 +192,9 @@ else
 fi
 
 # ── Internet connectivity check ───────────────────────────────────────────────
-HAVE_INTERNET=0
 if curl -fsSL --max-time 5 https://huggingface.co >/dev/null 2>&1; then
-    HAVE_INTERNET=1
     info "Internet: reachable (huggingface.co)"
 elif curl -fsSL --max-time 5 https://pypi.org >/dev/null 2>&1; then
-    HAVE_INTERNET=1
     info "Internet: reachable (pypi.org)"
 else
     warn "Internet appears unreachable. Model downloads and pip installs may fail."
@@ -1522,7 +1519,7 @@ fi
 step "Helper scripts"
 
 # run-gguf: uses hardware-tuned defaults from config
-cat > "$BIN_DIR/run-gguf" <<PYEOF
+cat > "$BIN_DIR/run-gguf" <<'PYEOF'
 #!/usr/bin/env python3
 """Run a local GGUF model. Defaults loaded from ~/.config/local-llm/selected_model.conf"""
 import sys, os, glob, argparse
@@ -1709,7 +1706,7 @@ else
 fi
 if "$VENV/bin/python3" -c "import llama_cpp" 2>/dev/null; then
     _lcp_ver=$("$VENV/bin/python3" -c "import llama_cpp; print(getattr(llama_cpp,'__version__','?'))" 2>/dev/null || echo "?")
-    ok "llama-cpp-python $( echo $_lcp_ver)"
+    ok "llama-cpp-python $_lcp_ver"
 else
     fail "llama-cpp-python import failed → exec bash && run-gguf"
 fi
@@ -2953,7 +2950,7 @@ chmod +x "$BIN_DIR/llm-chat"
 info "Web UI: llm-chat  →  serves on http://localhost:8090"
 
 # =============================================================================
-# OPEN WEBUI — Primary Web UI
+# STEP 13a — OPEN WEBUI (Primary Browser UI)
 # =============================================================================
 step "Open WebUI (primary browser UI)"
 
