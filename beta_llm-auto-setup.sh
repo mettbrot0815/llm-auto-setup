@@ -870,6 +870,9 @@ if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then
 fi
 if command -v bat &>/dev/null; then
     alias cat='bat --paging=never --style=plain'
+    alias less='bat --paging=always'
+    alias head='bat --paging=never --style=plain -n 20'
+    alias tail='bat --paging=never --style=plain -n 20'
     export MANPAGER='sh -c "col -bx | bat --language=man --style=plain --paging=always"'
     # source-highlight: colorize less output (falls back silently if absent)
     export LESSOPEN="| src-hilite-lesspipe.sh %s" 2>/dev/null || true
@@ -2653,12 +2656,17 @@ fi
 printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "5" "neofetch" "system info banner + fastfetch"
 printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "6" "Open WebUI" "full browser chat UI with auth + history (~500 MB pip install)"
 echo ""
+echo -e "  ${CYAN}── AI Pentest / Red-team tools (require Docker) ─────────────────${NC}"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "7" "PentestAgent" "TUI pentest agent — LiteLLM, MCP, playbooks (Python)"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "8" "PentAGI" "Full-stack pentest web UI — Ollama compatible (Docker)"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "9" "RedAmon" "Agentic red-team framework — Kali sandbox (Docker)"
+echo ""
 if [[ -t 0 ]]; then
     read -r -p "  > " _tool_sel
 else
     _tool_sel=""
 fi
-[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6"
+[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6 7 8 9"
 
 # ── 1: tmux ───────────────────────────────────────────────────────────────────
 if [[ "${_tool_sel:-}" == *"1"* ]]; then
@@ -2765,7 +2773,7 @@ if [[ "${_tool_sel:-}" == *"6"* ]]; then
 
     cat > "$BIN_DIR/llm-webui-alt" <<OWUI_ALT_LAUNCHER
 #!/usr/bin/env bash
-# llm-webui-alt — Open WebUI browser interface (alternative to Jan.ai)
+# llm-webui-alt — Open WebUI browser interface
 export DATA_DIR="$GUI_DIR/open-webui-data"
 mkdir -p "\$DATA_DIR"
 
@@ -2813,10 +2821,266 @@ echo "  Press Ctrl+C to stop."
 "$OWUI_VENV/bin/open-webui" serve --host $OWUI_HOST --port 8080
 OWUI_ALT_LAUNCHER
     chmod +x "$BIN_DIR/llm-webui-alt"
-    # Expose via alias webui-alt (main webui alias stays Jan.ai)
+    # Expose via alias webui-alt
     grep -q "llm-webui-alt" "$HOME/.local_llm_aliases" 2>/dev/null \
         || echo "alias webui-alt='llm-webui-alt'" >> "$HOME/.local_llm_aliases"
     info "Open WebUI installed → run: webui-alt (http://localhost:8080)"
+fi
+
+# ── 7: PentestAgent ───────────────────────────────────────────────────────────
+if [[ "${_tool_sel:-}" == *"7"* ]]; then
+    step "PentestAgent (AI pentest TUI)"
+    PTAGENT_DIR="$HOME/pentest/pentestagent"
+    PTAGENT_VENV="$HOME/.local/share/pentestagent-venv"
+
+    # Deps: git, python3.10+, playwright chromium
+    sudo apt-get install -y git python3-dev build-essential 2>/dev/null || true
+
+    # Clone / update
+    if [[ -d "$PTAGENT_DIR/.git" ]]; then
+        info "PentestAgent: pulling updates…"
+        git -C "$PTAGENT_DIR" pull --ff-only || warn "git pull failed — using existing clone."
+    else
+        mkdir -p "$(dirname "$PTAGENT_DIR")"
+        git clone https://github.com/GH05TCREW/pentestagent.git "$PTAGENT_DIR" \
+            || { warn "PentestAgent clone failed — check internet access."; }
+    fi
+
+    if [[ -d "$PTAGENT_DIR" ]]; then
+        # Create dedicated venv
+        "${PYTHON_BIN:-python3}" -m venv "$PTAGENT_VENV"
+        "$PTAGENT_VENV/bin/pip" install --upgrade pip --quiet
+        "$PTAGENT_VENV/bin/pip" install -e "$PTAGENT_DIR[all]" \
+            || { warn "PentestAgent pip install failed."; }
+        # Playwright chromium (headless browser tool)
+        "$PTAGENT_VENV/bin/playwright" install chromium 2>/dev/null \
+            || warn "playwright chromium install failed — browser tool won't work."
+
+        # Write .env template if not present
+        if [[ ! -f "$PTAGENT_DIR/.env" ]]; then
+            cat > "$PTAGENT_DIR/.env" <<'PTAGENT_ENV'
+# PentestAgent configuration
+# Use Ollama local model (no cloud key needed):
+PENTESTAGENT_MODEL=ollama/mistral
+# Or cloud providers:
+# ANTHROPIC_API_KEY=sk-ant-...
+# PENTESTAGENT_MODEL=claude-sonnet-4-20250514
+# OPENAI_API_KEY=sk-...
+# PENTESTAGENT_MODEL=gpt-4o
+# Optional: web search via Tavily
+# TAVILY_API_KEY=tvly-...
+PTAGENT_ENV
+            info "PentestAgent: .env template written → $PTAGENT_DIR/.env"
+        fi
+
+        # Launcher script
+        cat > "$BIN_DIR/pentestagent" <<PTAGENT_LAUNCHER
+#!/usr/bin/env bash
+# pentestagent — AI pentest TUI (PentestAgent by GH05TCREW)
+cd "$PTAGENT_DIR"
+source "$PTAGENT_VENV/bin/activate"
+exec pentestagent "\$@"
+PTAGENT_LAUNCHER
+        chmod +x "$BIN_DIR/pentestagent"
+        grep -q "pentestagent" "$ALIAS_FILE" 2>/dev/null \
+            || echo "alias pentest='pentestagent'" >> "$ALIAS_FILE"
+        info "PentestAgent installed → run: pentestagent  (or: pentest)"
+        info "  Config: $PTAGENT_DIR/.env"
+        info "  Docs:   https://github.com/GH05TCREW/pentestagent"
+    fi
+fi
+
+# ── 8: PentAGI ────────────────────────────────────────────────────────────────
+if [[ "${_tool_sel:-}" == *"8"* ]]; then
+    step "PentAGI (full-stack AI pentest web UI)"
+    PENTAGI_DIR="$HOME/pentest/pentagi"
+
+    # Ensure Docker is available
+    if ! command -v docker &>/dev/null; then
+        warn "Docker not found — installing Docker Engine…"
+        curl -fsSL https://get.docker.com | sudo sh \
+            && sudo usermod -aG docker "$USER" \
+            && info "Docker installed. Re-login or run: newgrp docker" \
+            || { warn "Docker install failed — install manually: https://docs.docker.com/engine/install/"; }
+    fi
+    if ! command -v docker &>/dev/null; then
+        warn "PentAGI skipped — Docker unavailable."; 
+    else
+        mkdir -p "$PENTAGI_DIR"
+        # Download docker-compose.yml from official source
+        if [[ ! -f "$PENTAGI_DIR/docker-compose.yml" ]]; then
+            curl -fsSL \
+                https://raw.githubusercontent.com/vxcontrol/pentagi/master/docker-compose.yml \
+                -o "$PENTAGI_DIR/docker-compose.yml" \
+                || { warn "PentAGI: failed to download docker-compose.yml"; }
+        fi
+        # Write .env template if not present
+        if [[ ! -f "$PENTAGI_DIR/.env" ]]; then
+            curl -fsSL \
+                https://raw.githubusercontent.com/vxcontrol/pentagi/master/.env.example \
+                -o "$PENTAGI_DIR/.env" 2>/dev/null \
+                || cat > "$PENTAGI_DIR/.env" <<'PENTAGI_ENV'
+# PentAGI configuration — fill in at least one LLM provider key
+# Local (free):
+OLLAMA_SERVER_URL=http://host.docker.internal:11434
+OLLAMA_SERVER_MODEL=qwen3:8b
+OLLAMA_SERVER_PULL_MODELS_ENABLED=false
+OLLAMA_SERVER_LOAD_MODELS_ENABLED=false
+# Cloud providers (optional — at least one needed):
+# OPEN_AI_KEY=
+# ANTHROPIC_API_KEY=
+# GEMINI_API_KEY=
+# Default admin credentials (change these!):
+PENTAGI_POSTGRES_USER=pentagi
+PENTAGI_POSTGRES_PASSWORD=changeme_db
+COOKIE_SIGNING_SALT=changeme_salt_32chars_minimum_here
+PUBLIC_URL=https://localhost:8443
+CORS_ORIGINS=https://localhost:8443
+# Free search (enabled by default):
+DUCKDUCKGO_ENABLED=true
+SPLOITUS_ENABLED=true
+PENTAGI_ENV
+            info "PentAGI: .env template written → $PENTAGI_DIR/.env"
+        fi
+
+        # Launcher / management script
+        cat > "$BIN_DIR/pentagi" <<PENTAGI_LAUNCHER
+#!/usr/bin/env bash
+# pentagi — PentAGI docker-compose manager
+PENTAGI_DIR="$PENTAGI_DIR"
+case "\${1:-start}" in
+    start|up)
+        echo "Starting PentAGI…"
+        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" --env-file "\$PENTAGI_DIR/.env" up -d
+        echo "→ UI: https://localhost:8443  (default: admin@pentagi.com / admin)"
+        ;;
+    stop|down)
+        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" down
+        ;;
+    logs)
+        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" logs -f "\${2:-pentagi}"
+        ;;
+    pull)
+        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" pull
+        ;;
+    *)
+        echo "Usage: pentagi {start|stop|logs|pull}"
+        ;;
+esac
+PENTAGI_LAUNCHER
+        chmod +x "$BIN_DIR/pentagi"
+        grep -q "alias pentagi" "$ALIAS_FILE" 2>/dev/null \
+            || echo "alias pentagi='pentagi'" >> "$ALIAS_FILE"
+        info "PentAGI installed → run: pentagi start"
+        info "  Config: $PENTAGI_DIR/.env  (set LLM keys before first start)"
+        info "  UI:     https://localhost:8443  (first start pulls ~2 GB images)"
+        info "  Ollama: OLLAMA_SERVER_URL=http://host.docker.internal:11434"
+        info "  Docs:   https://github.com/vxcontrol/pentagi"
+    fi
+fi
+
+# ── 9: RedAmon ────────────────────────────────────────────────────────────────
+if [[ "${_tool_sel:-}" == *"9"* ]]; then
+    step "RedAmon (agentic red-team framework)"
+    REDAMON_DIR="$HOME/pentest/redamon"
+
+    # Ensure Docker is available
+    if ! command -v docker &>/dev/null; then
+        warn "Docker not found — installing Docker Engine…"
+        curl -fsSL https://get.docker.com | sudo sh \
+            && sudo usermod -aG docker "$USER" \
+            && info "Docker installed. Re-login or run: newgrp docker" \
+            || { warn "Docker install failed — install manually: https://docs.docker.com/engine/install/"; }
+    fi
+    if ! command -v docker &>/dev/null; then
+        warn "RedAmon skipped — Docker unavailable."
+    else
+        # Clone / update
+        if [[ -d "$REDAMON_DIR/.git" ]]; then
+            info "RedAmon: pulling updates…"
+            git -C "$REDAMON_DIR" pull --ff-only || warn "git pull failed — using existing clone."
+        else
+            mkdir -p "$(dirname "$REDAMON_DIR")"
+            git clone https://github.com/samugit83/redamon.git "$REDAMON_DIR" \
+                || { warn "RedAmon clone failed — check internet access."; }
+        fi
+
+        if [[ -d "$REDAMON_DIR" ]]; then
+            # Write .env from example if not present
+            if [[ ! -f "$REDAMON_DIR/.env" ]]; then
+                if [[ -f "$REDAMON_DIR/.env.example" ]]; then
+                    cp "$REDAMON_DIR/.env.example" "$REDAMON_DIR/.env"
+                else
+                    cat > "$REDAMON_DIR/.env" <<'REDAMON_ENV'
+# RedAmon configuration — fill in at least one LLM provider key
+# Recommended (most capable):
+ANTHROPIC_API_KEY=sk-ant-...
+# Or OpenAI:
+# OPENAI_API_KEY=sk-proj-...
+# Local Ollama (OpenAI-compatible endpoint):
+# OPENAI_COMPAT_BASE_URL=http://host.docker.internal:11434/v1
+# OPENAI_COMPAT_API_KEY=
+# Optional extras:
+# TAVILY_API_KEY=tvly-...   # web search
+# NVD_API_KEY=...            # faster CVE lookups
+REDAMON_ENV
+                fi
+                info "RedAmon: .env written → $REDAMON_DIR/.env"
+            fi
+
+            # Launcher script
+            cat > "$BIN_DIR/redamon" <<REDAMON_LAUNCHER
+#!/usr/bin/env bash
+# redamon — RedAmon docker-compose manager
+REDAMON_DIR="$REDAMON_DIR"
+case "\${1:-start}" in
+    start|up)
+        echo "Building and starting RedAmon (first run builds Kali image — may take 10-20 min)…"
+        cd "\$REDAMON_DIR"
+        docker compose --profile tools build
+        docker compose up -d postgres neo4j recon-orchestrator kali-sandbox agent webapp
+        echo "→ UI: http://localhost:3000"
+        echo "  (to also start GVM/OpenVAS add: docker compose up -d)"
+        ;;
+    start-full)
+        echo "Starting RedAmon with GVM/OpenVAS (~30 min feed sync on first run)…"
+        cd "\$REDAMON_DIR"
+        docker compose --profile tools build
+        docker compose up -d
+        echo "→ UI: http://localhost:3000  (GVM feeds syncing in background)"
+        ;;
+    stop|down)
+        docker compose -f "\$REDAMON_DIR/docker-compose.yml" down
+        ;;
+    logs)
+        docker compose -f "\$REDAMON_DIR/docker-compose.yml" logs -f "\${2:-agent}"
+        ;;
+    pull)
+        git -C "\$REDAMON_DIR" pull --ff-only
+        ;;
+    *)
+        echo "Usage: redamon {start|start-full|stop|logs|pull}"
+        echo "  start       — core stack (no GVM)"
+        echo "  start-full  — full stack including GVM/OpenVAS"
+        ;;
+esac
+REDAMON_LAUNCHER
+            chmod +x "$BIN_DIR/redamon"
+            grep -q "alias redamon" "$ALIAS_FILE" 2>/dev/null \
+                || echo "alias redamon='redamon'" >> "$ALIAS_FILE"
+
+            # Ollama host fix: RedAmon containers need Ollama reachable on 0.0.0.0
+            info "RedAmon installed → run: redamon start"
+            info "  Config: $REDAMON_DIR/.env  (set at least one LLM key)"
+            info "  UI:     http://localhost:3000"
+            info "  Ollama: set OPENAI_COMPAT_BASE_URL=http://host.docker.internal:11434/v1"
+            info "    and ensure Ollama is bound to 0.0.0.0:"
+            info "    sudo mkdir -p /etc/systemd/system/ollama.service.d"
+            info "    echo -e '[Service]\\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"' | sudo tee /etc/systemd/system/ollama.service.d/override.conf"
+            info "    sudo systemctl daemon-reload && sudo systemctl restart ollama"
+            info "  Docs: https://github.com/samugit83/redamon"
+        fi
+    fi
 fi
 
 [[ -n "${_tool_sel:-}" ]] && info "Optional tools step complete." || info "Optional tools: skipped." 
@@ -3266,7 +3530,7 @@ Local LLM commands:
   llm-checker            Hardware scan + ranked model catalog + what fits your GPU
   cowork                 Open Interpreter — AI that runs code + manages files
   ai / aider             AI pair programmer with git integration
-  webui                  Open WebUI at http://localhost:8080  (optional — run: llm-setup → 6)
+  webui                  Open WebUI at http://localhost:8080  (optional — run: llm-setup → tool 6)
   llm-stop               Stop Ollama and any running UIs
   llm-update             Upgrade Ollama + Open WebUI (if installed), pull latest model
   llm-switch             Change active model (no full reinstall)
@@ -3473,7 +3737,7 @@ echo -e "  ${CYAN}┌───────────────────�
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Chat interfaces ─────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}chat${NC}          Neural Terminal → http://localhost:8090         ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}webui${NC}         Open WebUI → http://localhost:8080  (opt. tool 6) ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}webui${NC}         Open WebUI → http://localhost:8080                  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Run models ──────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}run-model${NC}     Run your default model from the command line    ${CYAN}│${NC}"
@@ -3507,6 +3771,23 @@ echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-setup${NC}     Re-run setup from local
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-stop${NC}      Stop Ollama backend                             ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama + WebUI + re-pull active model    ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-switch${NC}    Change model (no reinstall needed)              ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Pentest / Red-team (optional tools 7-9) ─────────────────${NC}  ${CYAN}│${NC}"
+if [[ -x "$BIN_DIR/pentestagent" ]]; then
+echo -e "  ${CYAN}│${NC}   ${YELLOW}pentestagent${NC}  AI pentest TUI  (pentest)                       ${CYAN}│${NC}"
+else
+echo -e "  ${CYAN}│${NC}   ${YELLOW}pentestagent${NC}  ${GREEN}(opt 7 — re-run setup to add)${NC}               ${CYAN}│${NC}"
+fi
+if [[ -x "$BIN_DIR/pentagi" ]]; then
+echo -e "  ${CYAN}│${NC}   ${YELLOW}pentagi${NC}       Full-stack pentest UI → https://localhost:8443  ${CYAN}│${NC}"
+else
+echo -e "  ${CYAN}│${NC}   ${YELLOW}pentagi${NC}       ${GREEN}(opt 8 — re-run setup to add)${NC}               ${CYAN}│${NC}"
+fi
+if [[ -x "$BIN_DIR/redamon" ]]; then
+echo -e "  ${CYAN}│${NC}   ${YELLOW}redamon${NC}       Agentic red-team → http://localhost:3000        ${CYAN}│${NC}"
+else
+echo -e "  ${CYAN}│${NC}   ${YELLOW}redamon${NC}       ${GREEN}(opt 9 — re-run setup to add)${NC}               ${CYAN}│${NC}"
+fi
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Help ─────────────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-help${NC}      Show full command reference                     ${CYAN}│${NC}"
