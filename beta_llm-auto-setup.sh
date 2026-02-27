@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v2.6.0
+# Local LLM Auto-Setup — Universal Edition v3.1.0
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04 — CPU-only through high-end GPU.
+# Also works on Debian 12, Linux Mint 21+, and Pop!_OS 22.04.
 # =============================================================================
 
+# Strict mode: exit on error, treat unset variables as errors, propagate pipe
+# failures. We intentionally omit -e at top level because we handle failures
+# explicitly with warn/error helpers throughout, but individual sections use
+# || warn/|| error to stay safe without aborting on non-critical failures.
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="2.6.0"
+SCRIPT_VERSION="3.1.0"
 # Set this to your hosted URL to enable auto-update checks on each run:
 SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
@@ -28,9 +33,13 @@ ALIAS_FILE="$HOME/.local_llm_aliases"
 MODEL_CONFIG="$CONFIG_DIR/selected_model.conf"
 GUI_DIR="$HOME/.local/share/llm-webui"
 
-# ---------- Colors ------------------------------------------------------------
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'; NC='\033[0m'
+# ---------- Colors (disabled automatically when stdout is not a tty) ----------
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; MAGENTA=''; NC=''
+fi
 
 # ---------- Logging -----------------------------------------------------------
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -39,7 +48,12 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 log()   { echo -e "$(date +'%Y-%m-%d %H:%M:%S') $1"; }
 info()  { log "${GREEN}[INFO]${NC}  $1"; }
 warn()  { log "${YELLOW}[WARN]${NC}  $1"; }
-error() { log "${RED}[ERROR]${NC} $1"; exit 1; }
+# error(): print message + compact diagnostics, then exit
+error() {
+    log "${RED}[ERROR]${NC} $1"
+    log "${RED}[ERROR]${NC} Log file: $LOG_FILE"
+    exit 1
+}
 step()  {
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}  ▶  $1${NC}"
@@ -67,11 +81,21 @@ retry() {
     done
 }
 
+# is_wsl2: returns 0 if running inside WSL (1 or 2), 1 otherwise.
+# Works without uname -r WSL-specific patterns (they vary by distro/kernel).
 is_wsl2() {
-    # Check /proc/version for "microsoft" (present on all WSL1 and WSL2 kernels).
-    # We intentionally do NOT require "wsl2" in uname -r — most WSL2 kernel strings
-    # contain "microsoft-standard" or "microsoft-WSL2" but not the literal "wsl2".
     grep -qi microsoft /proc/version 2>/dev/null
+}
+
+# get_distro_id: returns lowercase distro ID (ubuntu, debian, linuxmint, pop, …)
+get_distro_id() {
+    grep -m1 '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]' || echo "unknown"
+}
+
+# get_distro_codename: returns ubuntu-style codename (jammy, noble, bookworm, …)
+get_distro_codename() {
+    grep -m1 '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || \
+    lsb_release -sc 2>/dev/null || echo "unknown"
 }
 
 # =============================================================================
@@ -79,17 +103,35 @@ is_wsl2() {
 # =============================================================================
 step "Pre-flight checks"
 
-[[ "${EUID}" -eq 0 ]] && error "Do not run as root."
-command -v sudo &>/dev/null || error "sudo is required."
+[[ "${EUID}" -eq 0 ]] && error "Do not run as root. Run as a normal user with sudo access."
+command -v sudo &>/dev/null || error "sudo is required but not found. Install it: apt-get install sudo"
+
+# ── Architecture check ────────────────────────────────────────────────────────
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH" in
+    x86_64)  ARCH_OK=1 ;;
+    aarch64) ARCH_OK=1; warn "ARM64 detected — CUDA wheels unavailable; will build from source." ;;
+    *)       warn "Untested architecture: $HOST_ARCH. Proceeding anyway." ; ARCH_OK=1 ;;
+esac
+
+# ── Distro check ──────────────────────────────────────────────────────────────
+DISTRO_ID=$(get_distro_id)
+DISTRO_CODENAME=$(get_distro_codename)
+UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || grep -oP '(?<=^VERSION_ID=")[\d.]+' /etc/os-release 2>/dev/null || echo "unknown")
+info "Distro: ${DISTRO_ID} ${UBUNTU_VERSION} (${DISTRO_CODENAME}) on ${HOST_ARCH}"
+case "$DISTRO_ID" in
+    ubuntu|debian|linuxmint|pop|neon|elementary|zorin) ;;
+    *) warn "Distro '${DISTRO_ID}' not officially tested. apt-based install paths will be used." ;;
+esac
 
 # ── Single sudo prompt — keep credentials alive for the entire script ─────────
 # sudo -v extends the TTY-scoped timestamp every 50 s (Ubuntu 22.04+ ppid mode).
 echo -e "${CYAN}[sudo]${NC} This script needs elevated privileges for apt, systemd, and CUDA/ROCm."
 sudo -v || error "sudo authentication failed."
-( while true; do sleep 50; sudo -v; done ) &
+( while true; do sleep 50; sudo -v 2>/dev/null; done ) &
 SUDO_KEEPALIVE_PID=$!
 # Ensure keepalive is killed even if script exits early (error, Ctrl-C, etc.)
-trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT INT TERM
+trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null; trap - EXIT INT TERM' EXIT INT TERM
 info "sudo keepalive active (PID $SUDO_KEEPALIVE_PID)."
 
 # ── Self-update check ─────────────────────────────────────────────────────────
@@ -121,7 +163,8 @@ if [[ -n "$SCRIPT_UPDATE_URL" ]]; then
     if [[ -n "$_remote_ver" && "$_remote_ver" != "$SCRIPT_VERSION" ]]; then
         echo ""
         echo -e "${YELLOW}  ┌──────────────────────────────────────────────────────────────┐${NC}"
-        echo -e "${YELLOW}  │  Update available: v${SCRIPT_VERSION} → v${_remote_ver}                           │${NC}"
+        printf "${YELLOW}  │${NC}  Update available: v%-10s → v%-10s                 ${YELLOW}│${NC}\n" \
+            "$SCRIPT_VERSION" "$_remote_ver"
         echo -e "${YELLOW}  │  Set SCRIPT_UPDATE_URL to auto-download.                    │${NC}"
         echo -e "${YELLOW}  └──────────────────────────────────────────────────────────────┘${NC}"
         echo ""
@@ -142,7 +185,24 @@ fi
 unset _local_ver _remote_ver 2>/dev/null || true
 
 info "Log: $LOG_FILE  (script v$SCRIPT_VERSION)"
-is_wsl2 && info "WSL2 detected." || info "Native Linux detected." 
+if is_wsl2; then
+    info "WSL2 environment detected."
+else
+    info "Native Linux detected."
+fi
+
+# ── Internet connectivity check ───────────────────────────────────────────────
+HAVE_INTERNET=0
+if curl -fsSL --max-time 5 https://huggingface.co >/dev/null 2>&1; then
+    HAVE_INTERNET=1
+    info "Internet: reachable (huggingface.co)"
+elif curl -fsSL --max-time 5 https://pypi.org >/dev/null 2>&1; then
+    HAVE_INTERNET=1
+    info "Internet: reachable (pypi.org)"
+else
+    warn "Internet appears unreachable. Model downloads and pip installs may fail."
+    warn "  If behind a proxy, set: export https_proxy=http://proxy:port"
+fi
 
 # =============================================================================
 # STEP 2 — SYSTEM SCAN
@@ -154,14 +214,19 @@ CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xarg
 CPU_THREADS=$(nproc 2>/dev/null || echo 4)
 
 # Detect instruction sets (important for choosing optimal llama.cpp build)
-CPU_FLAGS=$(grep -m1 'flags' /proc/cpuinfo 2>/dev/null || echo "")
-HAS_AVX2=0;   echo "$CPU_FLAGS" | grep -qw avx2   && HAS_AVX2=1
-HAS_AVX512=0; echo "$CPU_FLAGS" | grep -qw avx512f && HAS_AVX512=1
-HAS_AVX=0;    echo "$CPU_FLAGS" | grep -qw avx     && HAS_AVX=1
+# Read CPU flags once; avoid spawning multiple grep subshells.
+CPU_FLAGS=$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null \
+            || grep -m1 '^Features' /proc/cpuinfo 2>/dev/null \
+            || echo "")
+HAS_AVX2=0;   [[ "$CPU_FLAGS" =~ (^| )avx2( |$)   ]] && HAS_AVX2=1
+HAS_AVX512=0; [[ "$CPU_FLAGS" =~ (^| )avx512f( |$) ]] && HAS_AVX512=1
+HAS_AVX=0;    [[ "$CPU_FLAGS" =~ (^| )avx( |$)     ]] && HAS_AVX=1
+# NEON is ARM's equivalent of SSE/AVX — used for ARM64 builds
+HAS_NEON=0;   [[ "$HOST_ARCH" == "aarch64" ]] && HAS_NEON=1
 
 # ---------- RAM ---------------------------------------------------------------
-TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 4096000)
-AVAIL_RAM_KB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 2048000)
+TOTAL_RAM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 4096000)
+AVAIL_RAM_KB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || echo 2048000)
 TOTAL_RAM_GB=$(( TOTAL_RAM_KB / 1024 / 1024 ))
 AVAIL_RAM_GB=$(( AVAIL_RAM_KB / 1024 / 1024 ))
 # Ensure sane minimums in case of weird /proc/meminfo output
@@ -169,54 +234,110 @@ AVAIL_RAM_GB=$(( AVAIL_RAM_KB / 1024 / 1024 ))
 (( AVAIL_RAM_GB < 1 )) && AVAIL_RAM_GB=2
 
 # ---------- GPU ---------------------------------------------------------------
-# We detect NVIDIA and AMD independently, then set unified HAS_GPU / GPU_VRAM_GB
-# so the model selection engine works identically for both.
+# Priority: NVIDIA > AMD > Intel Arc.
+# We set unified HAS_GPU / GPU_VRAM_GB so model selection works identically.
 HAS_NVIDIA=0
 HAS_AMD_GPU=0
-HAS_GPU=0          # set to 1 if any capable GPU found
+HAS_INTEL_GPU=0
+HAS_GPU=0          # 1 if any capable dGPU found
 GPU_NAME="None"
 GPU_VRAM_MIB=0
 GPU_VRAM_GB=0
 DRIVER_VER="N/A"
 CUDA_VER_SMI=""
 AMD_ROCM_VER=""
+AMD_GFX_VER=""     # gfx1100 etc. — needed for HSA_OVERRIDE_GFX_VERSION
 
 # ── NVIDIA ────────────────────────────────────────────────────────────────────
 if command -v nvidia-smi &>/dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown")
-    GPU_VRAM_MIB_RAW=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d ' ' || echo "0")
-    [[ "$GPU_VRAM_MIB_RAW" =~ ^[0-9]+$ ]] && GPU_VRAM_MIB=$GPU_VRAM_MIB_RAW || GPU_VRAM_MIB=0
+    # For model selection we use the VRAM of the largest single GPU (a model's layers
+    # are offloaded to one device; summing across GPUs would overstate capacity).
+    # For display we show the count and note the total.
+    _nv_vram_max=0
+    _nv_vram_total=0
+    while IFS= read -r _mib_line; do
+        _mib_line="${_mib_line// /}"
+        if [[ "$_mib_line" =~ ^[0-9]+$ ]]; then
+            _nv_vram_total=$(( _nv_vram_total + _mib_line ))
+            (( _mib_line > _nv_vram_max )) && _nv_vram_max=$_mib_line
+        fi
+    done < <(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true)
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown NVIDIA GPU")
     DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "N/A")
     CUDA_VER_SMI=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -n1 || echo "")
-    if (( GPU_VRAM_MIB > 500 )); then
+    _nv_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
+    if (( _nv_count > 1 )); then
+        GPU_NAME="${_nv_count}x ${GPU_NAME}"
+        # Show total in name; model selection uses per-card max
+    fi
+    if (( _nv_vram_max > 500 )); then
         HAS_NVIDIA=1; HAS_GPU=1
+        # Use largest single GPU VRAM for model tier selection
+        GPU_VRAM_MIB=$_nv_vram_max
         GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
     fi
 fi
 
 # ── AMD GPU ───────────────────────────────────────────────────────────────────
-# Only probe AMD if no NVIDIA found — avoid dual-GPU confusion.
+# Probe AMD only if no NVIDIA found (avoids dual-GPU confusion on Optimus etc.)
 if (( !HAS_NVIDIA )); then
-    # sysfs mem_info_vram_total works on all kernels ≥ 4.15 without ROCm installed.
-    # Iterate cards; pick the first one reporting > 512 MiB (skips iGPUs).
+    # sysfs mem_info_vram_total works on kernels ≥ 4.15 without ROCm installed.
+    # Iterate all drm cards; pick the one with the most VRAM > 512 MiB.
+    _best_amd_mib=0
+    _best_amd_card=""
     for _sysfs_card in /sys/class/drm/card*/device/mem_info_vram_total; do
         [[ -f "$_sysfs_card" ]] || continue
-        _amd_vram_bytes=$(cat "$_sysfs_card" 2>/dev/null || echo 0)
+        _amd_vram_bytes=$(< "$_sysfs_card" 2>/dev/null || echo 0)
         _amd_vram_mib=$(( _amd_vram_bytes / 1024 / 1024 ))
-        if (( _amd_vram_mib > 512 )); then
-            GPU_VRAM_MIB=$_amd_vram_mib
-            GPU_VRAM_GB=$(( _amd_vram_mib / 1024 ))
-            HAS_AMD_GPU=1; HAS_GPU=1
-            # Get GPU name from lspci (works without ROCm)
-            GPU_NAME=$(lspci 2>/dev/null                 | grep -i "VGA\|Display\|3D"                 | grep -i "AMD\|ATI\|Radeon\|gfx"                 | head -n1 | sed 's/.*: //' | xargs || echo "AMD GPU")
-            # ROCm version if installed
-            if command -v rocminfo &>/dev/null; then
-                AMD_ROCM_VER=$(rocminfo 2>/dev/null | grep -oP 'Runtime Version: \K[0-9.]+' | head -n1 || echo "")
-            fi
-            DRIVER_VER=$(cat /sys/class/drm/card*/device/driver/module/version 2>/dev/null | head -n1                 || echo "$(uname -r)")
-            break
+        if (( _amd_vram_mib > _best_amd_mib && _amd_vram_mib > 512 )); then
+            _best_amd_mib=$_amd_vram_mib
+            _best_amd_card="$_sysfs_card"
         fi
     done
+    if (( _best_amd_mib > 512 )); then
+        GPU_VRAM_MIB=$_best_amd_mib
+        GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
+        HAS_AMD_GPU=1; HAS_GPU=1
+        # GPU name: prefer rocm-smi, fall back to lspci
+        if command -v rocm-smi &>/dev/null; then
+            GPU_NAME=$(rocm-smi --showproductname 2>/dev/null \
+                       | grep -oP '(?<=GPU\[0\] : ).*' | head -n1 | xargs \
+                       || echo "AMD GPU")
+        else
+            GPU_NAME=$(lspci 2>/dev/null \
+                       | grep -iE "VGA|Display|3D" \
+                       | grep -iE "AMD|ATI|Radeon|gfx" \
+                       | head -n1 | sed 's/.*: //' | xargs || echo "AMD GPU")
+        fi
+        # ROCm version and gfx target if installed
+        if command -v rocminfo &>/dev/null; then
+            AMD_ROCM_VER=$(rocminfo 2>/dev/null \
+                           | grep -oP 'Runtime Version:\s*\K[0-9.]+' | head -n1 || echo "")
+            AMD_GFX_VER=$(rocminfo 2>/dev/null \
+                          | grep -oP 'gfx\d+[a-z]*' | head -n1 || echo "")
+        fi
+        DRIVER_VER=$(< /sys/class/drm/card0/device/driver/module/version 2>/dev/null \
+                     || uname -r)
+    fi
+fi
+
+# ── Intel Arc / Xe GPU ────────────────────────────────────────────────────────
+# Intel Arc uses the i915/xe driver (no dedicated VRAM sysfs like AMD).
+# We detect via lspci and flag it — vulkan/SYCL GPU offload is possible
+# but llama.cpp SYCL builds are complex; we note it but don't change model tiers.
+if (( !HAS_NVIDIA && !HAS_AMD_GPU )); then
+    if lspci 2>/dev/null | grep -qiE "Intel.*Arc|Intel.*Xe"; then
+        HAS_INTEL_GPU=1
+        GPU_NAME=$(lspci 2>/dev/null \
+                   | grep -iE "Intel.*Arc|Intel.*Xe" | head -n1 | sed 's/.*: //' | xargs \
+                   || echo "Intel Arc GPU")
+        # Intel integrated VRAM shared from RAM — approximate from available RAM
+        # Intel Arc discrete cards (A770=16GB, A750=8GB, A380=6GB) don't expose sysfs VRAM easily.
+        # We treat Intel Arc as CPU-only for model selection to stay safe.
+        info "Intel Arc/Xe GPU detected: $GPU_NAME"
+        info "  llama.cpp SYCL backend is supported but not auto-configured here."
+        info "  CPU-only tiers will be used for model selection."
+    fi
 fi
 
 # ---------- Disk --------------------------------------------------------------
@@ -229,12 +350,14 @@ echo -e "  ${CYAN}│           HARDWARE SCAN RESULTS             │${NC}"
 echo -e "  ${CYAN}├─────────────────────────────────────────────┤${NC}"
 printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "CPU" "$CPU_MODEL" | cut -c1-52
 printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "Threads"  "${CPU_THREADS} logical cores"
+printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "Arch"     "${HOST_ARCH}"
 printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "SIMD"     "$(
     flags=""
     (( HAS_AVX512 )) && flags="AVX-512 AVX2 AVX"
-    [[ -z "$flags" ]] && (( HAS_AVX2 )) && flags="AVX2 AVX"
-    [[ -z "$flags" ]] && (( HAS_AVX  )) && flags="AVX"
-    [[ -z "$flags" ]] && flags="baseline (no AVX)"
+    [[ -z "$flags" ]] && (( HAS_AVX2 ))   && flags="AVX2 AVX"
+    [[ -z "$flags" ]] && (( HAS_AVX ))    && flags="AVX"
+    [[ -z "$flags" ]] && (( HAS_NEON ))   && flags="NEON (ARM64)"
+    [[ -z "$flags" ]] && flags="baseline"
     echo "$flags"
 )"
 printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "RAM"      "${TOTAL_RAM_GB} GB total / ${AVAIL_RAM_GB} GB free"
@@ -247,9 +370,15 @@ if (( HAS_NVIDIA )); then
 elif (( HAS_AMD_GPU )); then
     printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "VRAM"     "${GPU_VRAM_GB} GB (${GPU_VRAM_MIB} MiB)"
     printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "Driver"   "$DRIVER_VER"
-    [[ -n "$AMD_ROCM_VER" ]] && \
-    printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "API"      "ROCm $AMD_ROCM_VER" || \
-    printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "API"      "ROCm (not yet installed)"
+    if [[ -n "$AMD_ROCM_VER" ]]; then
+        local_api_str="ROCm $AMD_ROCM_VER"
+        [[ -n "$AMD_GFX_VER" ]] && local_api_str+="  (${AMD_GFX_VER})"
+        printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "API"  "$local_api_str"
+    else
+        printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "API"      "ROCm (not yet installed)"
+    fi
+elif (( HAS_INTEL_GPU )); then
+    printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "Note"     "Intel Arc — CPU tiers used"
 fi
 printf "  ${CYAN}│${NC}  %-12s %-30s ${CYAN}│${NC}\n" "Disk free" "${DISK_FREE_GB} GB"
 echo -e "  ${CYAN}└─────────────────────────────────────────────┘${NC}"
@@ -257,31 +386,26 @@ echo ""
 
 # =============================================================================
 # STEP 3 — MODEL SELECTION ENGINE
-# All public models (bartowski). Catalog: 2026-02. Tiers: 24GB→32B, 16GB→MoE,
-# 12-10GB→Phi-4/Qwen3-14B, 8GB→8B-Q6, 6GB→8B-Q4, 4GB→4B, CPU→Phi-4-mini.
+# All public models (bartowski). Auto-tiers:
+#   ≥48GB VRAM → Llama-3.3-70B | ≥24GB → Qwen3-32B | ≥16GB → Qwen3-30B-MoE
+#   ≥12GB → Qwen3-14B | ≥10GB → Gemma-3-12B | ≥8GB → Qwen3-8B-Q6
+#   ≥6GB → Qwen3-8B-Q4 | ≥4GB → Qwen3-4B | ≥2GB → Phi-3.5-mini
+#   CPU: ≥32GB→8B | ≥16GB→8B | ≥8GB→4B | <8GB→1.7B/Phi-mini
 # =============================================================================
 
 step "Auto-selecting model"
 
-# Helper: MiB needed per layer for a given model total size and layer count
-# Used to calculate how many layers fit in VRAM
-# $1=model_size_gb  $2=num_layers  → MiB per layer
-mib_per_layer() {
-    local size_gb="$1" layers="$2"
-    echo $(( (size_gb * 1024) / layers ))
-}
-
-# Headroom to keep free in VRAM for KV-cache + activations
-VRAM_HEADROOM_MIB=1400
+# Headroom to keep free in VRAM for KV-cache + activations (flash attn = ~1.2 GB)
+VRAM_HEADROOM_MIB=1200
 VRAM_USABLE_MIB=$(( GPU_VRAM_MIB - VRAM_HEADROOM_MIB ))
 (( VRAM_USABLE_MIB < 0 )) && VRAM_USABLE_MIB=0
 
-# Maximum RAM we want to commit to model layers (leave 4 GB for OS + Python)
+# Maximum RAM for model layers (leave 4 GB for OS + Python)
 RAM_FOR_LAYERS_GB=$(( TOTAL_RAM_GB - 4 ))
 (( RAM_FOR_LAYERS_GB < 1 )) && RAM_FOR_LAYERS_GB=1
 
-# Calculate layers that fit fully in VRAM given model size and layer count
-# Returns the number of layers to offload to GPU
+# gpu_layers_for $size_gb $num_layers → layers that fit in VRAM
+# Note: mib_per_layer() was removed — arithmetic is inlined below for clarity.
 gpu_layers_for() {
     local size_gb="$1" num_layers="$2"
     local mib_layer=$(( (size_gb * 1024) / num_layers ))
@@ -293,8 +417,7 @@ gpu_layers_for() {
 }
 
 # ── Model definitions ─────────────────────────────────────────────────────────
-# Rankings updated Feb 2026 from whatllm.org, localllm.in, ArtificialAnalysis
-# [TOOLS]=function calling  [THINK]=chain-of-thought via /think  [UNCENS]=uncensored  ★=best pick
+# [TOOLS]=function calling  [THINK]=reasoning via /think  [UNCENS]=uncensored  ★=best pick
 
 declare -A M   # holds the chosen model's fields
 
@@ -302,51 +425,49 @@ select_model() {
     local vram=$GPU_VRAM_GB
     local ram=$TOTAL_RAM_GB
 
+    # ── ≥ 48 GB VRAM (multi-GPU or H100/A100 class) ───────────────────────────
+    if (( HAS_GPU && vram >= 48 )); then
+        highlight "High-end GPU (${vram} GB VRAM) → Llama-3.3-70B [TOOLS] ★"
+        M[name]="Llama-3.3-70B-Instruct Q4_K_M"; M[caps]="TOOLS"
+        M[file]="Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+        M[size_gb]=40; M[layers]=80; M[tier]="70B"; return
+
     # ── ≥ 24 GB VRAM ─────────────────────────────────────────────────────────
-    # Qwen3-32B: #1 open-weight GGUF at this tier (Feb 2026).
-    # Fully on GPU at 24 GB; 128K context; best TOOLS+THINK combo.
-    if (( HAS_GPU && vram >= 24 )); then
-        highlight "≥24 GB VRAM → Qwen3-32B Q4_K_M [TOOLS+THINK] ★"
+    elif (( HAS_GPU && vram >= 24 )); then
+        highlight "High-end GPU (${vram} GB VRAM) → Qwen3-32B [TOOLS+THINK] ★"
         M[name]="Qwen3-32B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-32B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
         M[size_gb]=19; M[layers]=64; M[tier]="32B"; return
 
     # ── ≥ 16 GB VRAM ─────────────────────────────────────────────────────────
-    # Mistral-Small-3.2-24B: March 2025 update, 128K context, vision-ready,
-    # Apache 2.0. 14GB file fits comfortably in 16 GB VRAM at ~40 t/s.
-    # Benchmarks: beats Qwen3-30B-A3B on instruction following; A3B faster.
-    # Tip: pick A3B (#19 in manual picker) if you prioritise raw speed.
     elif (( HAS_GPU && vram >= 16 )); then
-        highlight "≥16 GB VRAM → Mistral-Small-3.2-24B Q4_K_M [TOOLS+THINK] ★"
-        M[name]="Mistral-Small-3.2-24B Q4_K_M"; M[caps]="TOOLS + THINK"
-        M[file]="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
-        M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
-        M[size_gb]=14; M[layers]=40; M[tier]="24B"; return
+        highlight "16 GB VRAM → Qwen3-30B-A3B MoE [TOOLS+THINK] ★"
+        M[name]="Qwen3-30B-A3B Q4_K_M (MoE)"; M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
+        M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B (MoE)"; return
 
     # ── ≥ 12 GB VRAM ─────────────────────────────────────────────────────────
-    # Qwen3-14B: best overall 12 GB VRAM choice. TOOLS + THINK native.
     elif (( HAS_GPU && vram >= 12 )); then
-        highlight "≥12 GB VRAM → Qwen3-14B Q4_K_M [TOOLS+THINK] ★"
+        highlight "12 GB VRAM → Qwen3-14B [TOOLS+THINK] ★"
         M[name]="Qwen3-14B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
         M[size_gb]=9; M[layers]=40; M[tier]="14B"; return
 
     # ── ≥ 10 GB VRAM ─────────────────────────────────────────────────────────
-    # Phi-4-14B: replaces Mistral-Nemo here. Strong coding + math benchmark
-    # leader at 14B (Microsoft, Dec 2024). ~8.5 GB VRAM at Q4_K_M.
     elif (( HAS_GPU && vram >= 10 )); then
-        highlight "≥10 GB VRAM → Phi-4-14B Q4_K_M [TOOLS] ★"
-        M[name]="Phi-4-14B Q4_K_M"; M[caps]="TOOLS + THINK"
-        M[file]="phi-4-Q4_K_M.gguf"
-        M[url]="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
-        M[size_gb]=9; M[layers]=40; M[tier]="14B"; return
+        highlight "10 GB VRAM → Gemma-3-12B [TOOLS] ★"
+        M[name]="Gemma-3-12B Q4_K_M"; M[caps]="TOOLS"
+        M[file]="google_gemma-3-12b-it-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
+        M[size_gb]=8; M[layers]=46; M[tier]="12B"; return
 
     # ── ≥ 8 GB VRAM ──────────────────────────────────────────────────────────
-    # Qwen3-8B Q6_K: near Q8 quality, still fits in 8 GB. Top 8B choice Feb 2026.
     elif (( HAS_GPU && vram >= 8 )); then
-        highlight "≥8 GB VRAM → Qwen3-8B Q6_K [TOOLS+THINK] ★"
+        highlight "8 GB VRAM → Qwen3-8B Q6 [TOOLS+THINK] ★"
         M[name]="Qwen3-8B Q6_K"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-8B-Q6_K.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
@@ -354,7 +475,7 @@ select_model() {
 
     # ── ≥ 6 GB VRAM ──────────────────────────────────────────────────────────
     elif (( HAS_GPU && vram >= 6 )); then
-        highlight "≥6 GB VRAM → Qwen3-8B Q4_K_M [TOOLS+THINK] ★"
+        highlight "6 GB VRAM → Qwen3-8B Q4 [TOOLS+THINK] ★"
         M[name]="Qwen3-8B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
@@ -362,7 +483,7 @@ select_model() {
 
     # ── ≥ 4 GB VRAM ──────────────────────────────────────────────────────────
     elif (( HAS_GPU && vram >= 4 )); then
-        highlight "≥4 GB VRAM → Qwen3-4B Q4_K_M [TOOLS+THINK]"
+        highlight "4 GB VRAM → Qwen3-4B Q4 [TOOLS+THINK]"
         M[name]="Qwen3-4B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
@@ -370,7 +491,7 @@ select_model() {
 
     # ── ≥ 2 GB VRAM (partial offload) ────────────────────────────────────────
     elif (( HAS_GPU && vram >= 2 )); then
-        highlight "Small GPU (${vram} GB) → Qwen3-1.7B Q8_0 partial offload"
+        highlight "Small GPU (${vram} GB) → Qwen3-1.7B partial offload [TOOLS+THINK]"
         M[name]="Qwen3-1.7B Q8_0"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
@@ -378,20 +499,26 @@ select_model() {
 
     # ── CPU-only ──────────────────────────────────────────────────────────────
     else
-        if (( ram >= 16 )); then
-            highlight "CPU-only (${ram} GB RAM) → Qwen3-8B Q4_K_M [TOOLS+THINK] ★"
+        if (( ram >= 32 )); then
+            highlight "CPU-only (${ram} GB RAM) → Qwen3-14B Q4 [TOOLS+THINK] ★"
+            M[name]="Qwen3-14B Q4_K_M"; M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
+            M[size_gb]=9; M[layers]=40; M[tier]="14B"
+        elif (( ram >= 16 )); then
+            highlight "CPU-only (${ram} GB RAM) → Qwen3-8B Q4 [TOOLS+THINK] ★"
             M[name]="Qwen3-8B Q4_K_M"; M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[size_gb]=5; M[layers]=36; M[tier]="8B"
         elif (( ram >= 8 )); then
-            highlight "CPU-only (${ram} GB RAM) → Qwen3-4B Q4_K_M [TOOLS+THINK]"
+            highlight "CPU-only (${ram} GB RAM) → Qwen3-4B Q4 [TOOLS+THINK]"
             M[name]="Qwen3-4B Q4_K_M"; M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[size_gb]=3; M[layers]=36; M[tier]="4B"
         else
-            highlight "Low RAM CPU-only → Qwen3-1.7B Q8_0 (most efficient)"
+            highlight "Low RAM CPU-only (${ram} GB) → Qwen3-1.7B Q8 [TOOLS+THINK]"
             M[name]="Qwen3-1.7B Q8_0"; M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
@@ -418,22 +545,21 @@ MIB_PER_LAYER=$(( (M[size_gb] * 1024) / M[layers] ))
 MAX_CPU_LAYERS=$(( (RAM_FOR_LAYERS_GB * 1024) / (MIB_PER_LAYER > 0 ? MIB_PER_LAYER : 1) ))
 (( CPU_LAYERS > MAX_CPU_LAYERS )) && CPU_LAYERS=$MAX_CPU_LAYERS
 
-# Optimal thread count (physical cores, capped at 16)
-# Detect physical (non-hyperthreaded) core count for optimal inference threading.
-# We run lscpu once and parse both fields to avoid spawning two subshells.
+# Optimal thread count: physical cores × sockets, capped at 16 for inference
 LSCPU_OUT=$(lscpu 2>/dev/null || true)
 PHYS_ONLY=$(echo "$LSCPU_OUT" | awk '/^Core\(s\) per socket/{print $NF}')
 SOCKETS=$(echo   "$LSCPU_OUT" | awk '/^Socket\(s\)/{print $NF}')
 if [[ -n "$PHYS_ONLY" && -n "$SOCKETS" && "$PHYS_ONLY" =~ ^[0-9]+$ && "$SOCKETS" =~ ^[0-9]+$ ]]; then
     HW_THREADS=$(( PHYS_ONLY * SOCKETS ))
 else
-    # Fall back to logical core count from /proc/cpuinfo
-    HW_THREADS=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 4)
+    HW_THREADS=$(awk '/^processor/{n++}END{print (n>0?n:4)}' /proc/cpuinfo 2>/dev/null || echo 4)
 fi
+(( HW_THREADS < 1 )) && HW_THREADS=1
 (( HW_THREADS > 16 )) && HW_THREADS=16
 
-# Batch size: scale with VRAM
-if (( GPU_VRAM_GB >= 16 )); then  BATCH=1024
+# Batch size: scale with VRAM; larger = more throughput on GPU
+if (( GPU_VRAM_GB >= 24 )); then  BATCH=2048
+elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
 elif (( GPU_VRAM_GB >= 8 ));  then BATCH=512
 elif (( GPU_VRAM_GB >= 4 ));  then BATCH=256
 else                               BATCH=128
@@ -459,122 +585,146 @@ echo ""
 
 if ! ask_yes_no "Proceed with this configuration?"; then
     echo ""
-    echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━  MODEL PICKER  (Feb 2026 ranking)  ━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━  MODEL PICKER  ━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo -e "  Capability legend:"
     echo -e "    ${GREEN}[TOOLS]${NC}   tool/function calling — agents, JSON, APIs"
-    echo -e "    ${YELLOW}[THINK]${NC}   chain-of-thought mode — add /think to prompt  |  /no_think = fast"
-    echo -e "    ${MAGENTA}[UNCENS]${NC}  uncensored fine-tune — no content restrictions"
-    echo -e "    ${CYAN}★${NC}         recommended pick for that VRAM tier"
+    echo -e "    ${YELLOW}[THINK]${NC}   thinking mode — add /think to prompt for step-by-step reasoning"
+    echo -e "                             add /no_think for fast plain answers"
+    echo -e "    ${MAGENTA}[UNCENS]${NC}  uncensored — no content restrictions (fine-tuned)"
+    echo -e "    ${CYAN}★${NC}         best pick for that VRAM tier"
     echo ""
-    echo "  ┌────┬──────────────────────────────────────┬──────┬──────┬──────────────────────────┐"
-    echo "  │ #  │ Model                                │ Quant│ VRAM │ Capabilities             │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── TINY / CPU ────────────────────── │      │      │                          │"
-    echo "  │  1 │ Qwen3-1.7B                           │ Q8   │ CPU  │ ★ [TOOLS] [THINK]        │"
-    echo "  │  2 │ Qwen3-4B                             │ Q4   │ ~3GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  3 │ Phi-4-mini 3.8B    [tiny/strong]     │ Q4   │ CPU  │ ★ [TOOLS] [THINK]        │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── 6-8 GB VRAM ───────────────────── │      │      │                          │"
-    echo "  │  4 │ Qwen3-8B                             │ Q4   │ ~5GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  5 │ Qwen3-8B                             │ Q6   │ ~6GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  6 │ DeepSeek-R1-0528-Qwen3-8B            │ Q4   │ ~5GB │ ★ [THINK] top reasoning  │"
-    echo "  │  7 │ Gemma-3-12B                          │ Q4   │ ~8GB │ [TOOLS] Google vision    │"
-    echo "  │  8 │ Dolphin3.0-8B                        │ Q4   │ ~5GB │ [UNCENS]                 │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── 10-12 GB VRAM ─────────────────── │      │      │                          │"
-    echo "  │  9 │ Phi-4-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] top coding+math│"
-    echo "  │ 10 │ Qwen3-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 11 │ DeepSeek-R1-Distill-Qwen-14B         │ Q4   │ ~9GB │ [THINK] deep reasoning   │"
-    echo "  │ 12 │ Gemma-3-27B (partial offload)        │ Q4   │~12GB │ [TOOLS] Google           │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── 16-24 GB VRAM ─────────────────── │      │      │                          │"
-    echo "  │ 13 │ Mistral-Small-3.1-24B                │ Q4   │~14GB │ [TOOLS] [THINK] 128K ctx │"
-    echo "  │ 14 │ Mistral-Small-3.2-24B                │ Q4   │~14GB │ ★ [TOOLS] [THINK] newest │"
-    echo "  │ 15 │ Qwen3-30B-A3B  (MoE ★fast)          │ Q4   │~16GB │ ★ [TOOLS] [THINK] MoE    │"
-    echo "  │ 16 │ Qwen3-32B                            │ Q4   │~19GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 17 │ DeepSeek-R1-Distill-Qwen-32B         │ Q4   │~19GB │ [THINK] deep reasoning   │"
-    echo "  │ 18 │ Gemma-3-27B                          │ Q4   │~16GB │ [TOOLS] Google           │"
-    echo "  └────┴──────────────────────────────────────┴──────┴──────┴──────────────────────────┘"
+    echo "  ┌────┬──────────────────────────────────┬──────┬──────┬──────────────────────────┐"
+    echo "  │ #  │ Model                            │ Quant│ VRAM │ Capabilities             │"
+    echo "  ├────┼──────────────────────────────────┼──────┼──────┼──────────────────────────┤"
+    echo "  │  1 │ Qwen3-0.6B                       │ Q8   │ CPU  │ [TOOLS] [THINK]  (tiny)  │"
+    echo "  │  2 │ Qwen3-1.7B                       │ Q8   │ CPU  │ ★ [TOOLS] [THINK]        │"
+    echo "  │  3 │ Phi-3.5-mini 3.8B                │ Q4   │ CPU  │ (basic chat)             │"
+    echo "  │  4 │ Qwen3-4B                         │ Q4   │ ~3GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │  5 │ Qwen2.5-3B                       │ Q6   │ ~2GB │ [TOOLS]                  │"
+    echo "  │  6 │ Qwen3-8B                         │ Q4   │ ~5GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │  7 │ Qwen3-8B                         │ Q6   │ ~6GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │  8 │ DeepSeek-R1-Distill-Qwen-7B      │ Q4   │ ~5GB │ ★ [THINK]                │"
+    echo "  │  9 │ Dolphin3.0-8B                    │ Q4   │ ~5GB │ [UNCENS]                 │"
+    echo "  │ 10 │ Dolphin3.0-8B                    │ Q6   │ ~6GB │ [UNCENS]                 │"
+    echo "  │ 11 │ Gemma-3-9B                       │ Q4   │ ~5GB │ [TOOLS] (Google)         │"
+    echo "  │ 12 │ Gemma-3-12B                      │ Q4   │ ~8GB │ [TOOLS] ★                │"
+    echo "  │ 13 │ Mistral-Nemo-12B                 │ Q4   │ ~7GB │ [TOOLS]                  │"
+    echo "  │ 14 │ Mistral-Nemo-12B                 │ Q5   │ ~8GB │ [TOOLS]                  │"
+    echo "  │ 15 │ Qwen3-14B                        │ Q4   │ ~9GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │ 16 │ DeepSeek-R1-Distill-Qwen-14B     │ Q4   │ ~9GB │ ★ [THINK]                │"
+    echo "  │ 17 │ Qwen2.5-14B                      │ Q4   │ ~9GB │ [TOOLS]                  │"
+    echo "  │ 18 │ Mistral-Small-22B                │ Q4   │~13GB │ [TOOLS]                  │"
+    echo "  │ 19 │ Gemma-3-27B                      │ Q4   │~16GB │ [TOOLS]                  │"
+    echo "  │ 20 │ Qwen3-30B-A3B  (MoE ★fast)      │ Q4   │~16GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │ 21 │ Qwen3-32B                        │ Q4   │~19GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │ 22 │ DeepSeek-R1-Distill-Qwen-32B     │ Q4   │~19GB │ [THINK]                  │"
+    echo "  │ 23 │ Qwen2.5-32B                      │ Q4   │~19GB │ [TOOLS]                  │"
+    echo "  │ 24 │ Llama-3.3-70B                    │ Q4   │~40GB │ ★ [TOOLS] (multi-GPU)    │"
+    echo "  └────┴──────────────────────────────────┴──────┴──────┴──────────────────────────┘"
     echo ""
-    echo -e "  ${YELLOW}MoE note (15):${NC} 30B total params, only 3B active per token → 30B quality, 8B speed."
-    echo -e "  ${YELLOW}R1-0528 (6):${NC}  Updated May 2025 distill — significantly improved reasoning over original R1."
-    echo -e "  ${CYAN}Tip:${NC} gpt-oss:20b (OpenAI open-weight, 16 GB, 140 t/s) is available via: llm-add"
+    echo -e "  ${YELLOW}MoE note (20):${NC}  30B params, only 3B active per token → 30B quality at 8B speed."
+    echo -e "  ${YELLOW}Distill (8,16,22):${NC} DeepSeek-R1 reasoning distilled into smaller, fast models."
+    echo -e "  ${YELLOW}Gemma-3 (11,12,19):${NC} Google's multimodal-capable models with strong tool calling."
     echo ""
-    read -r -p "  Choice [1-18]: " manual_choice
+    read -r -p "  Choice [1-24]: " manual_choice
     case "$manual_choice" in
-        1)  M[name]="Qwen3-1.7B Q8_0";                            M[caps]="TOOLS + THINK"
+        1)  M[name]="Qwen3-0.6B Q8_0";                             M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-0.6B-Q8_0.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q8_0.gguf"
+            M[size_gb]=1;  M[layers]=28; M[tier]="0.6B" ;;
+        2)  M[name]="Qwen3-1.7B Q8_0";                             M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
             M[size_gb]=2;  M[layers]=28; M[tier]="1.7B" ;;
-        2)  M[name]="Qwen3-4B Q4_K_M";                            M[caps]="TOOLS + THINK"
+        3)  M[name]="Phi-3.5-mini-instruct Q4_K_M";                M[caps]="none"
+            M[file]="Phi-3.5-mini-instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+            M[size_gb]=2;  M[layers]=32; M[tier]="3.8B" ;;
+        4)  M[name]="Qwen3-4B Q4_K_M";                             M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[size_gb]=3;  M[layers]=36; M[tier]="4B" ;;
-        3)  M[name]="Phi-4-mini Q4_K_M";                          M[caps]="TOOLS + THINK"
-            M[file]="phi-4-mini-instruct-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf"
-            M[size_gb]=3;  M[layers]=32; M[tier]="3.8B" ;;
-        4)  M[name]="Qwen3-8B Q4_K_M";                            M[caps]="TOOLS + THINK"
+        5)  M[name]="Qwen2.5-3B-Instruct Q6_K";                    M[caps]="TOOLS"
+            M[file]="Qwen2.5-3B-Instruct-Q6_K.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q6_K.gguf"
+            M[size_gb]=2;  M[layers]=36; M[tier]="3B" ;;
+        6)  M[name]="Qwen3-8B Q4_K_M";                             M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[size_gb]=5;  M[layers]=36; M[tier]="8B" ;;
-        5)  M[name]="Qwen3-8B Q6_K";                              M[caps]="TOOLS + THINK"
+        7)  M[name]="Qwen3-8B Q6_K";                               M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-8B-Q6_K.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
             M[size_gb]=6;  M[layers]=36; M[tier]="8B" ;;
-        6)  M[name]="DeepSeek-R1-0528-Qwen3-8B Q4_K_M";          M[caps]="THINK"
-            M[file]="DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/main/DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
-            M[size_gb]=5;  M[layers]=36; M[tier]="8B" ;;
-        7)  M[name]="Gemma-3-12B Q4_K_M";                        M[caps]="TOOLS"
-            M[file]="google_gemma-3-12b-it-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
-            M[size_gb]=8;  M[layers]=46; M[tier]="12B" ;;
-        8)  M[name]="Dolphin3.0-Llama3.1-8B Q4_K_M";             M[caps]="UNCENS"
+        8)  M[name]="DeepSeek-R1-Distill-Qwen-7B Q4_K_M";         M[caps]="THINK"
+            M[file]="DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+            M[size_gb]=5;  M[layers]=28; M[tier]="7B" ;;
+        9)  M[name]="Dolphin3.0-Llama3.1-8B Q4_K_M";              M[caps]="UNCENS"
             M[file]="Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
             M[size_gb]=5;  M[layers]=32; M[tier]="8B" ;;
-        9)  M[name]="Phi-4-14B Q4_K_M";                          M[caps]="TOOLS + THINK"
-            M[file]="phi-4-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
-            M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
-        10) M[name]="Qwen3-14B Q4_K_M";                          M[caps]="TOOLS + THINK"
+        10) M[name]="Dolphin3.0-Llama3.1-8B Q6_K";                M[caps]="UNCENS"
+            M[file]="Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
+            M[url]="https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
+            M[size_gb]=6;  M[layers]=32; M[tier]="8B" ;;
+        11) M[name]="Gemma-3-9B Q4_K_M";                           M[caps]="TOOLS"
+            M[file]="google_gemma-3-9b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-9b-it-GGUF/resolve/main/google_gemma-3-9b-it-Q4_K_M.gguf"
+            M[size_gb]=6;  M[layers]=42; M[tier]="9B" ;;
+        12) M[name]="Gemma-3-12B Q4_K_M";                          M[caps]="TOOLS"
+            M[file]="google_gemma-3-12b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
+            M[size_gb]=8;  M[layers]=46; M[tier]="12B" ;;
+        13) M[name]="Mistral-Nemo-12B Q4_K_M";                     M[caps]="TOOLS"
+            M[file]="Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
+            M[size_gb]=7;  M[layers]=40; M[tier]="12B" ;;
+        14) M[name]="Mistral-Nemo-12B Q5_K_M";                     M[caps]="TOOLS"
+            M[file]="Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
+            M[size_gb]=8;  M[layers]=40; M[tier]="12B" ;;
+        15) M[name]="Qwen3-14B Q4_K_M";                            M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
             M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
-        11) M[name]="DeepSeek-R1-Distill-Qwen-14B Q4_K_M";      M[caps]="THINK"
+        16) M[name]="DeepSeek-R1-Distill-Qwen-14B Q4_K_M";        M[caps]="THINK"
             M[file]="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
             M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
-        12) M[name]="Gemma-3-27B Q4_K_M";                        M[caps]="TOOLS"
+        17) M[name]="Qwen2.5-14B-Instruct Q4_K_M";                 M[caps]="TOOLS"
+            M[file]="Qwen2.5-14B-Instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
+            M[size_gb]=9;  M[layers]=48; M[tier]="14B" ;;
+        18) M[name]="Mistral-Small-22B Q4_K_M";                    M[caps]="TOOLS"
+            M[file]="Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
+            M[size_gb]=13; M[layers]=48; M[tier]="22B" ;;
+        19) M[name]="Gemma-3-27B Q4_K_M";                          M[caps]="TOOLS"
             M[file]="google_gemma-3-27b-it-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
             M[size_gb]=16; M[layers]=62; M[tier]="27B" ;;
-        13) M[name]="Mistral-Small-3.1-24B Q4_K_M";              M[caps]="TOOLS + THINK"
-            M[file]="mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF/resolve/main/mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
-            M[size_gb]=14; M[layers]=40; M[tier]="24B" ;;
-        14) M[name]="Mistral-Small-3.2-24B Q4_K_M";              M[caps]="TOOLS + THINK"
-            M[file]="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
-            M[size_gb]=14; M[layers]=40; M[tier]="24B" ;;
-        15) M[name]="Qwen3-30B-A3B Q4_K_M (MoE)";               M[caps]="TOOLS + THINK"
+        20) M[name]="Qwen3-30B-A3B Q4_K_M (MoE)";                 M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
-            M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B (MoE)" ;;
-        16) M[name]="Qwen3-32B Q4_K_M";                          M[caps]="TOOLS + THINK"
+            M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B" ;;
+        21) M[name]="Qwen3-32B Q4_K_M";                            M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-32B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
             M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
-        17) M[name]="DeepSeek-R1-Distill-Qwen-32B Q4_K_M";      M[caps]="THINK"
+        22) M[name]="DeepSeek-R1-Distill-Qwen-32B Q4_K_M";        M[caps]="THINK"
             M[file]="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
             M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
-        18) M[name]="Gemma-3-27B Q4_K_M";                        M[caps]="TOOLS"
-            M[file]="google_gemma-3-27b-it-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
-            M[size_gb]=16; M[layers]=62; M[tier]="27B" ;;
+        23) M[name]="Qwen2.5-32B-Instruct Q4_K_M";                 M[caps]="TOOLS"
+            M[file]="Qwen2.5-32B-Instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
+            M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
+        24) M[name]="Llama-3.3-70B-Instruct Q4_K_M";               M[caps]="TOOLS"
+            M[file]="Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+            M[size_gb]=40; M[layers]=80; M[tier]="70B" ;;
         *)  warn "Invalid choice — keeping auto-selected model." ;;
     esac
 
@@ -586,7 +736,8 @@ if ! ask_yes_no "Proceed with this configuration?"; then
     else
         GPU_LAYERS=0; CPU_LAYERS="${M[layers]}"
     fi
-    if (( GPU_VRAM_GB >= 16 )); then  BATCH=1024
+    if (( GPU_VRAM_GB >= 24 )); then  BATCH=2048
+    elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
     elif (( GPU_VRAM_GB >= 8 ));  then BATCH=512
     elif (( GPU_VRAM_GB >= 4 ));  then BATCH=256
     else                               BATCH=128
@@ -606,7 +757,7 @@ step "Python environment"
 # Ensure TEMP_DIR exists — used for venv test and get-pip.py bootstrap
 mkdir -p "$TEMP_DIR"
 
-# ── apt-get update first — this step needs packages before anything else ──────
+# ── apt-get update first ───────────────────────────────────────────────────────
 info "Running apt-get update…"
 sudo apt-get update -qq || warn "apt update returned non-zero."
 
@@ -638,17 +789,13 @@ else
 fi
 
 # ── Refresh PYVER_* from the actual binary we will use ────────────────────────
-# If we just installed python3.11 via deadsnakes, PYVER_MAJOR/MINOR still hold
-# the old system python version (e.g. 3.8). The venv package install below uses
-# these variables, so we must update them to match PYTHON_BIN.
 _PYVER_REFRESH=$("$PYTHON_BIN" --version 2>/dev/null | grep -oP '\d+\.\d+' | head -n1 || echo "$PYVER_RAW")
 PYVER_MAJOR=$(echo "$_PYVER_REFRESH" | cut -d. -f1)
 PYVER_MINOR=$(echo "$_PYVER_REFRESH" | cut -d. -f2)
 unset _PYVER_REFRESH
 
-# ── Install pip + venv for the detected version ───────────────────────────────
-# On Ubuntu 24.04, python3-venv alone is not enough — python3.12-venv is needed.
-# We install both the generic and version-specific packages to cover all cases.
+# ── Install pip + venv ────────────────────────────────────────────────────────
+# Ubuntu 24.04 requires the version-specific python3.12-venv package (not just python3-venv).
 info "Installing python3-pip, python3-venv, python${PYVER_MAJOR}.${PYVER_MINOR}-venv…"
 sudo apt-get install -y \
     python3-pip \
@@ -658,17 +805,32 @@ sudo apt-get install -y \
     2>/dev/null \
     || warn "Some Python packages failed — will attempt to continue."
 
+# ── Detect whether pip needs --break-system-packages ─────────────────────────
+# Ubuntu 23.04+ / Debian 12+ enforce PEP 668: pip refuses to install into the
+# system site-packages. We always use venvs, so we only need this flag if
+# somehow using the system python directly (e.g. during get-pip bootstrap).
+PIP_BSP_FLAG=""
+# PEP 668: detect externally-managed environments (Ubuntu 23.04+, Debian 12+).
+# Check for the marker file that pip uses to detect this — more reliable than
+# running pip --dry-run, which requires pip >= 22.1 and may not exist yet.
+_py_lib_dir=$("$PYTHON_BIN" -c "import sysconfig; print(sysconfig.get_path('stdlib'))" 2>/dev/null || true)
+if [[ -f "${_py_lib_dir}/EXTERNALLY-MANAGED" ]] 2>/dev/null; then
+    PIP_BSP_FLAG="--break-system-packages"
+    info "PEP 668 system-managed env detected — using --break-system-packages for bootstrap only."
+fi
+unset _py_lib_dir
+
 # If pip still not available, bootstrap it
 if ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
     info "pip not found — bootstrapping via get-pip.py…"
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$TEMP_DIR/get-pip.py" \
-        && "$PYTHON_BIN" "$TEMP_DIR/get-pip.py" --quiet \
+        && "$PYTHON_BIN" "$TEMP_DIR/get-pip.py" --quiet ${PIP_BSP_FLAG:+"$PIP_BSP_FLAG"} \
         && rm -f "$TEMP_DIR/get-pip.py" \
         || warn "get-pip.py bootstrap failed — pip may be unavailable."
 fi
 
-# Upgrade pip to latest
-"$PYTHON_BIN" -m pip install --upgrade pip --quiet 2>/dev/null \
+# Upgrade pip; use BSP flag only if needed
+"$PYTHON_BIN" -m pip install --upgrade pip --quiet ${PIP_BSP_FLAG:+"$PIP_BSP_FLAG"} 2>/dev/null \
     || warn "pip upgrade failed — using whatever version is installed."
 PIP_VER=$("$PYTHON_BIN" -m pip --version 2>/dev/null | awk '{print $2}' || echo "unknown")
 info "pip $PIP_VER ✔"
@@ -679,7 +841,6 @@ if "$PYTHON_BIN" -m venv "$TEST_VENV" 2>/dev/null; then
     rm -rf "$TEST_VENV"
     info "Python venv: OK  ($("$PYTHON_BIN" --version 2>&1))"
 else
-    # Last resort: try to install the venv module directly
     warn "venv test failed — trying to install python3-venv one more time…"
     sudo apt-get install -y "python${PYVER_MAJOR}.${PYVER_MINOR}-venv" python3-venv 2>/dev/null || true
     if ! "$PYTHON_BIN" -m venv "$TEST_VENV" 2>/dev/null; then
@@ -698,15 +859,24 @@ step "System dependencies"
 
 # Note: apt-get update already ran in the Python environment step above
 
-PKGS=(curl wget git build-essential cmake ninja-build python3 lsb-release zstd ffmpeg pciutils bat grc source-highlight)
-(( HAS_AVX2 )) && PKGS+=(libopenblas-dev)   # AVX2 path for CPU layers
+# Core build + runtime packages required for every install path
+CORE_PKGS=(curl wget git build-essential cmake ninja-build
+           python3 lsb-release zstd pciutils)
 
-sudo apt-get install -y "${PKGS[@]}" || warn "Some packages may have failed."
+# Optional but highly recommended
+OPT_PKGS=(ffmpeg bat grc source-highlight)
+
+# CPU inference acceleration (AVX2 path for llama.cpp BLAS)
+(( HAS_AVX2 )) && CORE_PKGS+=(libopenblas-dev)
+
+sudo apt-get install -y "${CORE_PKGS[@]}" || warn "Some core packages may have failed."
+# Optional packages: failures are non-fatal
+sudo apt-get install -y "${OPT_PKGS[@]}" 2>/dev/null \
+    || info "Some optional packages unavailable (bat/grc) — will skip syntax highlighting."
 
 for cmd in curl wget git python3; do
     command -v "$cmd" &>/dev/null || error "Critical dependency missing: $cmd"
 done
-# pip is accessed via python3 -m pip (no standalone pip3 on Ubuntu 24.04)
 "$PYTHON_BIN" -m pip --version &>/dev/null || error "pip not available — check Python environment step above."
 info "System dependencies OK."
 
@@ -776,7 +946,7 @@ if (( HAS_NVIDIA )); then
     step "CUDA toolkit"
 
     setup_cuda_env() {
-            sudo ldconfig 2>/dev/null || true
+        sudo ldconfig 2>/dev/null || true
 
         local lib_dir=""
         # Search for libcudart.so.12* (wildcard catches .12, .12.x, .12.x.y.z)
@@ -846,7 +1016,15 @@ if (( HAS_NVIDIA )); then
         if [[ "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_VERSION" != "24.04" ]]; then
             warn "Ubuntu $UBUNTU_VERSION not tested. Attempting anyway."
         fi
-        KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION//./}/x86_64/cuda-keyring_1.1-1_all.deb"
+        # Map uname -m → NVIDIA repo arch string
+        # x86_64 → x86_64 | aarch64 → sbsa (NVIDIA's arm64 server arch name)
+        case "$HOST_ARCH" in
+            x86_64)  _cuda_repo_arch="x86_64" ;;
+            aarch64) _cuda_repo_arch="sbsa" ;;
+            *)       _cuda_repo_arch="x86_64"
+                     warn "Unknown arch $HOST_ARCH — defaulting CUDA repo to x86_64." ;;
+        esac
+        KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION//./}/${_cuda_repo_arch}/cuda-keyring_1.1-1_all.deb"
         retry 3 5 wget -q -O "$TEMP_DIR/cuda-keyring.deb" "$KEYRING_URL" \
             || error "Failed to download CUDA keyring."
         sudo dpkg -i "$TEMP_DIR/cuda-keyring.deb" || true
@@ -870,7 +1048,7 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
     step "ROCm toolkit (AMD GPU)"
 
     setup_rocm_env() {
-        # Add ROCm lib path to LD_LIBRARY_PATH and persist it
+        # Add ROCm lib path to LD_LIBRARY_PATH and persist it in ~/.bashrc
         local rocm_lib=""
         for _rp in /opt/rocm/lib /opt/rocm-*/lib /usr/lib/x86_64-linux-gnu; do
             if [[ -f "$_rp/libhipblas.so" || -f "$_rp/librocblas.so" ]]; then
@@ -880,14 +1058,61 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
         [[ -z "$rocm_lib" ]] && rocm_lib="/opt/rocm/lib"   # best guess
         export LD_LIBRARY_PATH="$rocm_lib:${LD_LIBRARY_PATH:-}"
         export PATH="/opt/rocm/bin:$PATH"
+
+        # Detect gfx target now (after ROCm installed) if not detected earlier
+        if [[ -z "$AMD_GFX_VER" ]] && command -v rocminfo &>/dev/null; then
+            AMD_GFX_VER=$(rocminfo 2>/dev/null | grep -oP 'gfx\d+[a-z]*' | head -n1 || echo "")
+        fi
+
         _RC="$HOME/.bashrc"
-        ! grep -q "# ROCm — llm-auto-setup" "$_RC" 2>/dev/null && {
-            # printf with single-quoted format: $PATH stays literal (expands at shell startup).
-            # $rocm_lib expands now (we want the real path baked in).
+        if ! grep -q "# ROCm — llm-auto-setup" "$_RC" 2>/dev/null; then
             printf '\n# ROCm — llm-auto-setup\n' >> "$_RC"
             printf 'export PATH="/opt/rocm/bin:$PATH"\n' >> "$_RC"
             printf 'export LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' "$rocm_lib" >> "$_RC"
-        }
+            # Persist HSA_OVERRIDE_GFX_VERSION for cards not yet in ROCm whitelist
+            # (e.g. RX 6600/6700/6800/7600/7700/7900). Only write if detected.
+            if [[ -n "$AMD_GFX_VER" ]]; then
+                # Convert gfxNNNN[x] → major.minor.patch dot-notation for HSA_OVERRIDE_GFX_VERSION.
+                # Handles all known formats:
+                #   gfx803   → 8.0.3    (Fiji/Tonga,    3-digit)
+                #   gfx906   → 9.0.6    (Vega20,        3-digit)
+                #   gfx90a   → 9.0.10   (Arcturus,      2-digit base + letter suffix)
+                #   gfx1010  → 10.1.0   (Navi10,        4-digit)
+                #   gfx1100  → 11.0.0   (Navi31/RX7900, 4-digit)
+                #   gfx1103  → 11.0.3   (RDNA3 iGPU,    4-digit)
+                # Strategy: check for letter suffix first, then split by digit count.
+                _gfx_raw="${AMD_GFX_VER#gfx}"
+                _gfx_patch_suffix=""
+                _gfx_digits="$_gfx_raw"
+                if [[ "$_gfx_raw" =~ ^([0-9]+)([a-f])$ ]]; then
+                    _gfx_digits="${BASH_REMATCH[1]}"
+                    case "${BASH_REMATCH[2]}" in
+                        a) _gfx_patch_suffix="10" ;; b) _gfx_patch_suffix="11" ;;
+                        c) _gfx_patch_suffix="12" ;; d) _gfx_patch_suffix="13" ;;
+                        e) _gfx_patch_suffix="14" ;; f) _gfx_patch_suffix="15" ;;
+                    esac
+                fi
+                _gfx_len="${#_gfx_digits}"
+                if (( _gfx_len == 2 && ${#_gfx_patch_suffix} > 0 )); then
+                    # e.g. gfx90a: digits=90, patch_suffix=10 → 9.0.10
+                    _hsa_ver="${_gfx_digits:0:1}.${_gfx_digits:1:1}.${_gfx_patch_suffix}"
+                elif (( _gfx_len == 3 )); then
+                    _patch="${_gfx_patch_suffix:-${_gfx_digits:2:1}}"
+                    _hsa_ver="${_gfx_digits:0:1}.0.${_patch}"
+                elif (( _gfx_len >= 4 )); then
+                    _patch="${_gfx_patch_suffix:-${_gfx_digits:3}}"
+                    _hsa_ver="${_gfx_digits:0:2}.${_gfx_digits:2:1}.${_patch}"
+                else
+                    _hsa_ver="$_gfx_raw"   # unexpected format — pass through as-is
+                fi
+                printf '# HSA_OVERRIDE_GFX_VERSION: allows RDNA2/3 cards not in ROCm whitelist\n' >> "$_RC"
+                printf 'export HSA_OVERRIDE_GFX_VERSION="%s"\n' "$_hsa_ver" >> "$_RC"
+                printf 'export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-0}\n' >> "$_RC"
+                export HSA_OVERRIDE_GFX_VERSION="$_hsa_ver"
+                export ROCR_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-0}"
+                info "HSA_OVERRIDE_GFX_VERSION=$_hsa_ver written to ~/.bashrc (${AMD_GFX_VER})"
+            fi
+        fi
         info "ROCm env configured: $rocm_lib"
     }
 
@@ -919,11 +1144,20 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
             setup_rocm_env
         else
             warn "Failed to download amdgpu-install deb — trying manual apt path…"
-            # Fallback: direct apt install of minimal ROCm components
-            wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null                 | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg || true
-            echo "deb [arch=amd64] https://repo.radeon.com/rocm/apt/6.3 ${UBUNTU_VERSION} main"                 | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
+            # Fallback: direct apt install of minimal ROCm components.
+            # Discover the latest ROCm release tag from the repo index instead of
+            # hardcoding a version number that will go stale.
+            _rocm_apt_arch="amd64"
+            [[ "$HOST_ARCH" == "aarch64" ]] && _rocm_apt_arch="arm64"
+            _rocm_latest=$(wget -qO- "https://repo.radeon.com/rocm/apt/" 2>/dev/null \
+                | grep -oP '(?<=href=")[0-9]+\.[0-9]+(?=/)' | sort -V | tail -1 || echo "6.3")
+            wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null \
+                | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg || true
+            echo "deb [arch=${_rocm_apt_arch}] https://repo.radeon.com/rocm/apt/${_rocm_latest} ${DISTRO_CODENAME} main" \
+                | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
             sudo apt-get update -qq || true
-            sudo apt-get install -y rocm-hip-sdk rocm-opencl-sdk                 || warn "ROCm apt install failed — check https://rocm.docs.amd.com"
+            sudo apt-get install -y rocm-hip-sdk rocm-opencl-sdk \
+                || warn "ROCm apt install failed — check https://rocm.docs.amd.com"
             setup_rocm_env
         fi
         # Add current user to render + video groups (required for GPU access)
@@ -957,12 +1191,14 @@ step "llama-cpp-python"
 
 check_python_module() { "$VENV_DIR/bin/python3" -c "import $1" 2>/dev/null; }
 
-# Build flags tuned to detected CPU features
+# ── Build flags tuned to detected CPU + GPU features ─────────────────────────
 CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
 (( HAS_NVIDIA ))  && CMAKE_ARGS+=" -DGGML_CUDA=ON -DLLAMA_CUBLAS=ON"
+(( HAS_AMD_GPU )) && CMAKE_ARGS+=" -DGGML_HIPBLAS=ON"
 (( HAS_AVX512 ))  && CMAKE_ARGS+=" -DGGML_AVX512=ON -DGGML_AVX2=ON -DGGML_FMA=ON"
 (( !HAS_AVX512 && HAS_AVX2 )) && CMAKE_ARGS+=" -DGGML_AVX2=ON -DGGML_FMA=ON"
-(( !HAS_AVX2 && HAS_AVX )) && CMAKE_ARGS+=" -DGGML_AVX=ON"
+(( !HAS_AVX2 && HAS_AVX ))    && CMAKE_ARGS+=" -DGGML_AVX=ON"
+(( HAS_NEON ))                 && CMAKE_ARGS+=" -DGGML_NEON=ON"
 export SOURCE_BUILD_CMAKE_ARGS="$CMAKE_ARGS"
 
 LLAMA_INSTALLED=0
@@ -972,20 +1208,27 @@ if (( HAS_NVIDIA )); then
     CUDA_VER=""
     CUDA_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -n1 || true)
     [[ -z "$CUDA_VER" ]] && CUDA_VER="$CUDA_VER_SMI"
-    [[ -z "$CUDA_VER" ]] && CUDA_VER="12.1"
+    [[ -z "$CUDA_VER" ]] && CUDA_VER="12.4"   # default to latest stable
     CUDA_TAG="cu$(echo "$CUDA_VER" | tr -d '.')"
     info "CUDA $CUDA_VER → wheel tag $CUDA_TAG"
+    # Try exact match first, then fallback tags in order of recency
     for wheel_url in \
         "https://abetlen.github.io/llama-cpp-python/whl/${CUDA_TAG}" \
+        "https://abetlen.github.io/llama-cpp-python/whl/cu125" \
         "https://abetlen.github.io/llama-cpp-python/whl/cu124" \
+        "https://abetlen.github.io/llama-cpp-python/whl/cu123" \
         "https://abetlen.github.io/llama-cpp-python/whl/cu122" \
         "https://abetlen.github.io/llama-cpp-python/whl/cu121"; do
         info "Trying CUDA wheel: $wheel_url"
-        pip install llama-cpp-python \
-            --index-url "$wheel_url" \
-            --extra-index-url https://pypi.org/simple \
-            --quiet 2>&1 && { info "CUDA wheel installed from $wheel_url"; LLAMA_INSTALLED=1; break; } \
-            || warn "Failed — trying next."
+        if pip install llama-cpp-python \
+                --index-url "$wheel_url" \
+                --extra-index-url https://pypi.org/simple \
+                --quiet 2>&1; then
+            info "CUDA wheel installed from $wheel_url"
+            LLAMA_INSTALLED=1
+            break
+        fi
+        warn "Failed — trying next."
     done
 fi
 
@@ -993,41 +1236,87 @@ fi
 if (( HAS_AMD_GPU && !HAS_NVIDIA && LLAMA_INSTALLED == 0 )); then
     info "Trying ROCm pre-built wheels for llama-cpp-python…"
     for wheel_url in \
+        "https://abetlen.github.io/llama-cpp-python/whl/rocm620" \
+        "https://abetlen.github.io/llama-cpp-python/whl/rocm610" \
         "https://abetlen.github.io/llama-cpp-python/whl/rocm600" \
         "https://abetlen.github.io/llama-cpp-python/whl/rocm550"; do
         info "Trying ROCm wheel: $wheel_url"
-        pip install llama-cpp-python \
-            --index-url "$wheel_url" \
-            --extra-index-url https://pypi.org/simple \
-            --quiet 2>&1 && { info "ROCm wheel installed from $wheel_url"; LLAMA_INSTALLED=1; break; } \
-            || warn "Failed — trying next."
+        if pip install llama-cpp-python \
+                --index-url "$wheel_url" \
+                --extra-index-url https://pypi.org/simple \
+                --quiet 2>&1; then
+            info "ROCm wheel installed from $wheel_url"
+            LLAMA_INSTALLED=1
+            break
+        fi
+        warn "Failed — trying next."
     done
 fi
 
 # ── Source build fallback ─────────────────────────────────────────────────────
 if (( LLAMA_INSTALLED == 0 )); then
     if (( HAS_NVIDIA )); then
-        warn "No pre-built CUDA wheel found — building from source (~5 min)…"
+        warn "No pre-built CUDA wheel found — building from source (~5–10 min)…"
         MAKE_JOBS="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python CUDA build failed. Check logs."
     elif (( HAS_AMD_GPU )); then
-        warn "No pre-built ROCm wheel found — building from source (~8 min)…"
-        # GGML_HIPBLAS=ON enables ROCm GPU offload in llama.cpp
+        warn "No pre-built ROCm wheel found — building from source (~8–15 min)…"
+        # Auto-detect ROCm gfx target for HSA_OVERRIDE_GFX_VERSION
+        # Needed for RDNA2/3 cards not yet in ROCm's whitelist (e.g. RX 6000/7000 series)
+        if [[ -n "$AMD_GFX_VER" ]]; then
+            # Convert gfxNNNN[x] → major.minor.patch (same logic as setup_rocm_env above)
+            _gfx_raw="${AMD_GFX_VER#gfx}"
+            _gfx_patch_suffix="" _gfx_digits="$_gfx_raw"
+            if [[ "$_gfx_raw" =~ ^([0-9]+)([a-f])$ ]]; then
+                _gfx_digits="${BASH_REMATCH[1]}"
+                case "${BASH_REMATCH[2]}" in
+                    a) _gfx_patch_suffix="10" ;; b) _gfx_patch_suffix="11" ;;
+                    c) _gfx_patch_suffix="12" ;; d) _gfx_patch_suffix="13" ;;
+                    e) _gfx_patch_suffix="14" ;; f) _gfx_patch_suffix="15" ;;
+                esac
+            fi
+            _gfx_len="${#_gfx_digits}"
+            if (( _gfx_len == 2 && ${#_gfx_patch_suffix} > 0 )); then
+                _hsa_ver="${_gfx_digits:0:1}.${_gfx_digits:1:1}.${_gfx_patch_suffix}"
+            elif (( _gfx_len == 3 )); then
+                _patch="${_gfx_patch_suffix:-${_gfx_digits:2:1}}"
+                _hsa_ver="${_gfx_digits:0:1}.0.${_patch}"
+            elif (( _gfx_len >= 4 )); then
+                _patch="${_gfx_patch_suffix:-${_gfx_digits:3}}"
+                _hsa_ver="${_gfx_digits:0:2}.${_gfx_digits:2:1}.${_patch}"
+            else
+                _hsa_ver="$_gfx_raw"
+            fi
+            export HSA_OVERRIDE_GFX_VERSION="$_hsa_ver"
+            info "Set HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION} for ${AMD_GFX_VER}"
+        fi
         MAKE_JOBS="$HW_THREADS" \
         CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DGGML_HIPBLAS=ON" \
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python ROCm build failed. Check logs."
     else
-        info "CPU-only build — compiling llama-cpp-python (~3 min)…"
+        info "CPU-only build — compiling llama-cpp-python (~3–5 min)…"
         MAKE_JOBS="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python CPU build failed. Check logs."
     fi
+    # Mark that a source build was attempted (regardless of success).
+    # LLAMA_INSTALLED will be validated by check_python_module immediately below.
+    LLAMA_INSTALLED=1
 fi
 
-if check_python_module llama_cpp; then info "llama-cpp-python ✔"
-else warn "llama-cpp-python import failed — check CUDA paths."; fi
+if check_python_module llama_cpp; then
+    _lcp_ver=$("$VENV_DIR/bin/python3" -c "import llama_cpp; print(getattr(llama_cpp,'__version__','?'))" 2>/dev/null || echo "?")
+    info "llama-cpp-python ${_lcp_ver} ✔"
+else
+    warn "llama-cpp-python import failed — run-gguf won't work."
+    if (( HAS_NVIDIA )); then
+        warn "  Try: sudo ldconfig && exec bash"
+    elif (( HAS_AMD_GPU )); then
+        warn "  Try: exec bash  (reloads LD_LIBRARY_PATH with ROCm libs)"
+    fi
+fi
 
 # =============================================================================
 # STEP 10 — OLLAMA
@@ -1122,16 +1411,30 @@ fi
 step "Model download"
 
 cat > "$MODEL_CONFIG" <<EOF
+# llm-auto-setup config — generated $(date '+%Y-%m-%d %H:%M:%S') by v${SCRIPT_VERSION}
+# Format: KEY="value"  (grep-compatible; sections are comments only)
+
+# [model]
 MODEL_NAME="${M[name]}"
 MODEL_URL="${M[url]}"
 MODEL_FILENAME="${M[file]}"
 MODEL_SIZE="${M[tier]}"
 MODEL_CAPS="${M[caps]}"
 MODEL_LAYERS="${M[layers]}"
+
+# [hardware]
 GPU_LAYERS="$GPU_LAYERS"
 CPU_LAYERS="$CPU_LAYERS"
 HW_THREADS="$HW_THREADS"
 BATCH="$BATCH"
+
+# [hardware.info]
+GPU_NAME="$GPU_NAME"
+GPU_VRAM_GB="$GPU_VRAM_GB"
+TOTAL_RAM_GB="$TOTAL_RAM_GB"
+HOST_ARCH="$HOST_ARCH"
+DISTRO_ID="$DISTRO_ID"
+DISTRO_VERSION="$UBUNTU_VERSION"
 EOF
 info "Config saved: $MODEL_CONFIG"
 
@@ -1314,6 +1617,135 @@ if [[ -f ~/.config/local-llm/selected_model.conf ]]; then
 fi
 INFOEOF
 chmod +x "$BIN_DIR/local-models-info"
+
+# ── llm-doctor ────────────────────────────────────────────────────────────────
+# Comprehensive diagnostics: checks every component and prints fix instructions
+cat > "$BIN_DIR/llm-doctor" <<'DOCTOR_EOF'
+#!/usr/bin/env bash
+# llm-doctor — diagnose local LLM stack problems
+# Run this when something isn't working. Checks and prints fix instructions.
+set -uo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; NC='\033[0m'
+PASS=0; WARN=0; FAIL=0
+
+ok()   { echo -e "  ${GREEN}✔${NC}  $1"; PASS=$(( PASS+1 )); }
+warn() { echo -e "  ${YELLOW}⚠${NC}  $1"; WARN=$(( WARN+1 )); }
+fail() { echo -e "  ${RED}✘${NC}  $1"; FAIL=$(( FAIL+1 )); }
+
+_is_wsl2() { grep -qi microsoft /proc/version 2>/dev/null; }
+
+echo ""
+echo -e "${CYAN}═══════════════  LLM DOCTOR  ═══════════════${NC}"
+echo ""
+
+# ── GPU ──────────────────────────────────────────────────────────────────────
+echo -e "${CYAN}[ GPU ]${NC}"
+if command -v nvidia-smi &>/dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "?")
+    VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || echo 0)
+    ok "NVIDIA GPU: $GPU_NAME  (${VRAM} MiB VRAM)"
+    if ldconfig -p 2>/dev/null | grep -q 'libcudart\.so\.12'; then
+        ok "libcudart.so.12 in ldconfig"
+    else
+        fail "libcudart.so.12 NOT found → sudo ldconfig && exec bash"
+    fi
+    if command -v nvcc &>/dev/null; then
+        ok "nvcc: $(nvcc --version 2>/dev/null | grep release | head -1 | xargs)"
+    else
+        warn "nvcc not in PATH — try: exec bash (after setup baked CUDA path in ~/.bashrc)"
+    fi
+elif command -v rocminfo &>/dev/null || [[ -d /opt/rocm ]]; then
+    GFX=$(rocminfo 2>/dev/null | grep -oP 'gfx\d+[a-z]*' | head -1 || echo "?")
+    ok "AMD ROCm installed (gfx target: $GFX)"
+    [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]] && ok "HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION" \
+        || warn "HSA_OVERRIDE_GFX_VERSION not set — some RDNA2/3 cards need this"
+    if ldconfig -p 2>/dev/null | grep -q 'libhipblas'; then
+        ok "libhipblas in ldconfig"
+    else
+        warn "libhipblas not in ldconfig → exec bash (to reload LD_LIBRARY_PATH)"
+    fi
+else
+    warn "No GPU acceleration detected (CPU-only mode)"
+fi
+echo ""
+
+# ── Ollama ───────────────────────────────────────────────────────────────────
+echo -e "${CYAN}[ Ollama ]${NC}"
+if command -v ollama &>/dev/null; then
+    ok "ollama binary: $(ollama --version 2>/dev/null || echo 'present')"
+else
+    fail "ollama not found → curl -fsSL https://ollama.com/install.sh | sh"
+fi
+if _is_wsl2; then
+    if pgrep -f "ollama serve" >/dev/null 2>&1; then
+        ok "Ollama process running (WSL2)"
+    else
+        fail "Ollama not running → ollama-start"
+    fi
+else
+    if systemctl is-active --quiet ollama 2>/dev/null; then
+        ok "Ollama systemd service: active"
+    else
+        fail "Ollama service not active → sudo systemctl start ollama"
+    fi
+fi
+if curl -sf --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    N=$(curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null | grep -o '"name"' | wc -l || echo 0)
+    ok "Ollama API reachable (${N} model(s) registered)"
+else
+    fail "Ollama API not reachable on port 11434 → ollama-start"
+fi
+echo ""
+
+# ── Python / venv ────────────────────────────────────────────────────────────
+echo -e "${CYAN}[ Python ]${NC}"
+VENV="$HOME/.local/share/llm-venv"
+if [[ -f "$VENV/bin/python3" ]]; then
+    ok "venv: $VENV  ($("$VENV/bin/python3" --version 2>&1))"
+else
+    fail "venv missing → re-run llm-setup"
+fi
+if "$VENV/bin/python3" -c "import llama_cpp" 2>/dev/null; then
+    _lcp_ver=$("$VENV/bin/python3" -c "import llama_cpp; print(getattr(llama_cpp,'__version__','?'))" 2>/dev/null || echo "?")
+    ok "llama-cpp-python $( echo $_lcp_ver)"
+else
+    fail "llama-cpp-python import failed → exec bash && run-gguf"
+fi
+echo ""
+
+# ── Helper tools ─────────────────────────────────────────────────────────────
+echo -e "${CYAN}[ Tools ]${NC}"
+BIN="$HOME/.local/bin"
+for t in llm-chat llm-stop llm-update llm-switch llm-add run-gguf local-models-info; do
+    [[ -x "$BIN/$t" ]] && ok "$t" || fail "$t missing → re-run llm-setup"
+done
+[[ -x "$BIN/cowork" ]] && ok "cowork (Open Interpreter)" || warn "cowork not installed"
+[[ -x "$BIN/aider" ]]  && ok "aider"                     || warn "aider not installed"
+echo ""
+
+# ── Models ───────────────────────────────────────────────────────────────────
+echo -e "${CYAN}[ Models ]${NC}"
+GGUF_DIR="$HOME/local-llm-models/gguf"
+if ls "$GGUF_DIR"/*.gguf &>/dev/null 2>&1; then
+    while IFS= read -r f; do
+        ok "GGUF: $(basename "$f")  ($(du -sh "$f" 2>/dev/null | cut -f1))"
+    done < <(ls "$GGUF_DIR"/*.gguf 2>/dev/null)
+else
+    warn "No GGUF files in $GGUF_DIR → llm-add"
+fi
+echo ""
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo -e "${CYAN}═══════════════  SUMMARY  ═══════════════${NC}"
+echo -e "  ${GREEN}OK${NC}:   $PASS    ${YELLOW}Warn${NC}: $WARN    ${RED}Fail${NC}: $FAIL"
+echo ""
+(( FAIL > 0 )) && echo -e "  Fix failures above, then run ${YELLOW}llm-doctor${NC} again." || \
+    echo -e "  ${GREEN}Everything looks good!${NC}"
+echo ""
+DOCTOR_EOF
+chmod +x "$BIN_DIR/llm-doctor"
 
 # ── llm-stop ──────────────────────────────────────────────────────────────────
 cat > "$BIN_DIR/llm-stop" <<'STOP_EOF'
@@ -1552,24 +1984,30 @@ echo "════════════════════════�
 # Format: "display_name|quant|vram_gb|caps|file_gb|layers|filename|hf_path"
 # hf_path = repo/resolve/main/filename (after bartowski/)
 declare -a _CATALOG=(
+    "Qwen3-0.6B|Q8_0|0|TOOLS+THINK|1|28|Qwen_Qwen3-0.6B-Q8_0.gguf|Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q8_0.gguf"
     "Qwen3-1.7B|Q8_0|0|TOOLS+THINK|2|28|Qwen_Qwen3-1.7B-Q8_0.gguf|Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
-    "Phi-4-mini 3.8B|Q4_K_M|0|TOOLS+THINK|3|32|phi-4-mini-instruct-Q4_K_M.gguf|phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf"
+    "Phi-3.5-mini 3.8B|Q4_K_M|0|basic chat|2|32|Phi-3.5-mini-instruct-Q4_K_M.gguf|Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
     "Qwen3-4B|Q4_K_M|3|TOOLS+THINK|3|36|Qwen_Qwen3-4B-Q4_K_M.gguf|Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
+    "Qwen2.5-3B|Q6_K|2|TOOLS|2|36|Qwen2.5-3B-Instruct-Q6_K.gguf|Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q6_K.gguf"
     "Qwen3-8B|Q4_K_M|5|TOOLS+THINK|5|36|Qwen_Qwen3-8B-Q4_K_M.gguf|Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
     "Qwen3-8B|Q6_K|6|TOOLS+THINK|6|36|Qwen_Qwen3-8B-Q6_K.gguf|Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
-    "DeepSeek-R1-0528-8B ★|Q4_K_M|5|THINK|5|36|DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf|DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/main/DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
+    "DeepSeek-R1-Distill-7B|Q4_K_M|5|THINK|5|28|DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf|DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
     "Dolphin3.0-8B|Q4_K_M|5|UNCENS|5|32|Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf|Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
     "Dolphin3.0-8B|Q6_K|6|UNCENS|6|32|Dolphin3.0-Llama3.1-8B-Q6_K.gguf|Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
+    "Gemma-3-9B|Q4_K_M|6|TOOLS|6|42|google_gemma-3-9b-it-Q4_K_M.gguf|google_gemma-3-9b-it-GGUF/resolve/main/google_gemma-3-9b-it-Q4_K_M.gguf"
     "Gemma-3-12B|Q4_K_M|8|TOOLS|8|46|google_gemma-3-12b-it-Q4_K_M.gguf|google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
-    "Phi-4-14B|Q4_K_M|9|TOOLS+THINK|9|40|phi-4-Q4_K_M.gguf|phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
+    "Mistral-Nemo-12B|Q4_K_M|7|TOOLS|7|40|Mistral-Nemo-Instruct-2407-Q4_K_M.gguf|Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
+    "Mistral-Nemo-12B|Q5_K_M|8|TOOLS|8|40|Mistral-Nemo-Instruct-2407-Q5_K_M.gguf|Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
     "Qwen3-14B|Q4_K_M|9|TOOLS+THINK|9|40|Qwen_Qwen3-14B-Q4_K_M.gguf|Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
     "DeepSeek-R1-Distill-14B|Q4_K_M|9|THINK|9|40|DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf|DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
-    "Mistral-Small-3.1-24B ★|Q4_K_M|14|TOOLS+THINK|14|40|mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf|mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF/resolve/main/mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
-    "Mistral-Small-3.2-24B ★★|Q4_K_M|14|TOOLS+THINK|14|40|mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf|mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
-    "Gemma-3-27B (Google)|Q4_K_M|12|TOOLS|16|62|google_gemma-3-27b-it-Q4_K_M.gguf|google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
+    "Qwen2.5-14B|Q4_K_M|9|TOOLS|9|48|Qwen2.5-14B-Instruct-Q4_K_M.gguf|Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
+    "Mistral-Small-22B|Q4_K_M|13|TOOLS|13|48|Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf|Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
+    "Gemma-3-27B|Q4_K_M|16|TOOLS|16|62|google_gemma-3-27b-it-Q4_K_M.gguf|google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
     "Qwen3-30B-A3B MoE|Q4_K_M|16|TOOLS+THINK|18|48|Qwen_Qwen3-30B-A3B-Q4_K_M.gguf|Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
     "Qwen3-32B|Q4_K_M|19|TOOLS+THINK|19|64|Qwen_Qwen3-32B-Q4_K_M.gguf|Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
     "DeepSeek-R1-Distill-32B|Q4_K_M|19|THINK|19|64|DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf|DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
+    "Qwen2.5-32B|Q4_K_M|19|TOOLS|19|64|Qwen2.5-32B-Instruct-Q4_K_M.gguf|Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
+    "Llama-3.3-70B|Q4_K_M|40|TOOLS|40|80|Llama-3.3-70B-Instruct-Q4_K_M.gguf|Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
 )
 
 _show_table() {
@@ -2201,11 +2639,11 @@ function renderMarkdown(raw) {
   t = t.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
   // Horizontal rule
   t = t.replace(/^---+$/gm, '<hr>');
-  // Tables (simple)
+  // Tables (simple) — cell content is HTML-escaped to prevent XSS
   t = t.replace(/(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)+)/g, tbl => {
     const rows = tbl.trim().split('\n');
-    const header = rows[0].split('|').filter(c=>c.trim()).map(c=>`<th>${c.trim()}</th>`).join('');
-    const body = rows.slice(2).map(r=>'<tr>'+r.split('|').filter(c=>c.trim()).map(c=>`<td>${c.trim()}</td>`).join('')+'</tr>').join('');
+    const header = rows[0].split('|').filter(c=>c.trim()).map(c=>`<th>${escHtml(c.trim())}</th>`).join('');
+    const body = rows.slice(2).map(r=>'<tr>'+r.split('|').filter(c=>c.trim()).map(c=>`<td>${escHtml(c.trim())}</td>`).join('')+'</tr>').join('');
     return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
   });
   // Lists
@@ -2483,7 +2921,16 @@ else
 fi
 
 # ── Kill any stale HTTP server on our port ────────────────────────────────────
-OLD_PID=$(lsof -ti tcp:$HTTP_PORT 2>/dev/null || true)
+# Prefer ss (iproute2, always present on Ubuntu) over lsof (optional package).
+# fuser is a POSIX fallback if ss somehow isn't available.
+OLD_PID=""
+if command -v ss &>/dev/null; then
+    OLD_PID=$(ss -tlnp "sport = :$HTTP_PORT" 2>/dev/null \
+        | awk '/LISTEN/{match($0,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1 || true)
+fi
+if [[ -z "$OLD_PID" ]] && command -v fuser &>/dev/null; then
+    OLD_PID=$(fuser "${HTTP_PORT}/tcp" 2>/dev/null | tr -d ' ' || true)
+fi
 if [[ -n "$OLD_PID" ]]; then
     kill "$OLD_PID" 2>/dev/null || true
     sleep 0.5
@@ -3042,220 +3489,34 @@ info "Autonomous coworking tools installed."
 info "  cowork  — Open Interpreter (code execution, file ops, web browsing)"
 info "  aider   — AI pair programmer (git-integrated, edit files directly)"
 
-
-# =============================================================================
-# LLM-CHECKER — hardware scan, model ranking, installed models status
-# =============================================================================
-cat > "$BIN_DIR/llm-checker" <<'CHECKER_EOF'
-#!/usr/bin/env bash
-# llm-checker — live hardware + model ranking dashboard
-# Shows: GPU/VRAM/RAM, installed models, recommended pick, full ranked catalog.
-
-set -uo pipefail
-
-# ── Colours ───────────────────────────────────────────────────────────────────
-if [[ -t 1 ]]; then
-    G='\033[0;32m' Y='\033[0;33m' C='\033[0;36m' M='\033[0;35m'
-    R='\033[0;31m' W='\033[1;37m' N='\033[0m'
-else
-    G='' Y='' C='' M='' R='' W='' N=''
-fi
-
-# ── Hardware ─────────────────────────────────────────────────────────────────
-VRAM=0; GPU_NAME="None"; HAS_GPU=0
-if command -v nvidia-smi &>/dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name          --format=csv,noheader 2>/dev/null | head -1 || true)
-    VRAM=$(     nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
-                | head -1 | awk '{print int($1/1024)}' || echo 0)
-    (( VRAM > 0 )) && HAS_GPU=1
-elif command -v rocminfo &>/dev/null; then
-    GPU_NAME=$(rocminfo 2>/dev/null | awk '/Marketing Name/{$1=$2=""; print $0; exit}' | xargs)
-    VRAM=$(rocminfo 2>/dev/null | grep -i "size:" | grep -v "0 bytes" \
-        | awk '{print int($2/1024/1024/1024)}' | sort -rn | head -1 || echo 0)
-    (( VRAM > 0 )) && HAS_GPU=1
-fi
-RAM_GB=$(awk '/MemTotal/{print int($2/1024/1024)}' /proc/meminfo 2>/dev/null || echo 0)
-THREADS=$(nproc 2>/dev/null || echo 4)
-
-# ── Config ────────────────────────────────────────────────────────────────────
-CONFIG="$HOME/.config/local-llm/selected_model.conf"
-GGUF_DIR="$HOME/.local/share/llm-models"
-ACTIVE_MODEL=""; ACTIVE_TAG=""
-if [[ -f "$CONFIG" ]]; then
-    ACTIVE_MODEL=$(grep "^MODEL_NAME=" "$CONFIG" | head -1 | cut -d'"' -f2 || true)
-    ACTIVE_TAG=$(  grep "^OLLAMA_TAG="  "$CONFIG" | head -1 | cut -d'"' -f2 || true)
-fi
-
-# ── Header ─────────────────────────────────────────────────────────────────────
-echo ""
-echo -e "${C}╔══════════════════════════════════════════════════════════════════╗${N}"
-echo -e "${C}║              🔍  LLM CHECKER  —  System & Model Status          ║${N}"
-echo -e "${C}╚══════════════════════════════════════════════════════════════════╝${N}"
-echo ""
-
-# ── Hardware box ──────────────────────────────────────────────────────────────
-echo -e "${C}  ┌───────────────────────  HARDWARE  ──────────────────────────┐${N}"
-printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "CPU threads" "$THREADS"
-printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "RAM"         "${RAM_GB} GB"
-if (( HAS_GPU )); then
-    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "GPU"     "$GPU_NAME"
-    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "VRAM"    "${VRAM} GB"
-else
-    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "GPU"     "None (CPU-only mode)"
-fi
-echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
-echo ""
-
-# ── Active config ─────────────────────────────────────────────────────────────
-echo -e "${C}  ┌───────────────────────  ACTIVE MODEL  ──────────────────────┐${N}"
-if [[ -n "$ACTIVE_MODEL" ]]; then
-    printf "${C}  │${N}  %-12s ${G}%-48s${C}│${N}\n" "Model"   "$ACTIVE_MODEL"
-    [[ -n "$ACTIVE_TAG" ]] && \
-    printf "${C}  │${N}  %-12s ${Y}%-48s${C}│${N}\n" "Ollama"  "ollama run $ACTIVE_TAG"
-else
-    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "Model"   "(not configured — run llm-setup)"
-fi
-echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
-echo ""
-
-# ── Ollama status ─────────────────────────────────────────────────────────────
-echo -e "${C}  ┌───────────────────────  OLLAMA  ────────────────────────────┐${N}"
-if command -v ollama &>/dev/null; then
-    OLLAMA_VER=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
-    printf "${C}  │${N}  %-12s ${G}%-48s${C}│${N}\n" "Version" "ollama $OLLAMA_VER"
-    if curl -s --max-time 1 http://localhost:11434/api/tags &>/dev/null; then
-        INSTALLED_TAGS=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' ' ')
-        printf "${C}  │${N}  %-12s ${G}%-48s${C}│${N}\n" "Status" "running ✔"
-        if [[ -n "$INSTALLED_TAGS" ]]; then
-            echo -e "${C}  │${N}  Installed models:                                             ${C}│${N}"
-            ollama list 2>/dev/null | tail -n +2 | while IFS= read -r line; do
-                printf "${C}  │${N}   ${Y}%-61s${C}│${N}\n" "$line"
-            done
-        else
-            printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "Models" "(none downloaded yet)"
-        fi
-    else
-        printf "${C}  │${N}  %-12s ${R}%-48s${C}│${N}\n" "Status" "not running  (run: ollama-start)"
-    fi
-else
-    printf "${C}  │${N}  %-12s ${R}%-48s${C}│${N}\n" "Ollama" "not installed  (run: llm-setup)"
-fi
-echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
-echo ""
-
-# ── GGUF files ────────────────────────────────────────────────────────────────
-if [[ -d "$GGUF_DIR" ]] && ls "$GGUF_DIR"/*.gguf &>/dev/null 2>&1; then
-    echo -e "${C}  ┌───────────────────────  GGUF FILES  ────────────────────────┐${N}"
-    while IFS= read -r f; do
-        sz=$(du -sh "$f" 2>/dev/null | cut -f1)
-        printf "${C}  │${N}  ${Y}%-12s${N}  %-48s${C}│${N}\n" "$sz" "$(basename "$f")"
-    done < <(ls "$GGUF_DIR"/*.gguf 2>/dev/null)
-    echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
-    echo ""
-fi
-
-# ── Ranked model catalog ──────────────────────────────────────────────────────
-# Format: name | quant | vram_gb | caps | file_gb | rank_tier | note
-declare -a _RANKED=(
-    "Qwen3-1.7B          |Q8_0  |  0|TOOLS+THINK |  2|1   |ultra-fast tiny model"
-    "Phi-4-mini 3.8B ★  |Q4_K_M|  0|TOOLS+THINK |  3|1   |strong tiny ★"
-    "Qwen3-4B            |Q4_K_M|  3|TOOLS+THINK |  3|2   |best 4B"
-    "Qwen3-8B            |Q4_K_M|  5|TOOLS+THINK |  5|3   |great all-rounder ★"
-    "Qwen3-8B            |Q6_K  |  6|TOOLS+THINK |  6|3   |higher quality"
-    "DeepSeek-R1-D-7B    |Q4_K_M|  5|THINK       |  5|3   |reasoning specialist"
-    "Dolphin3.0-8B       |Q4_K_M|  5|UNCENS      |  5|3   |no restrictions"
-    "Gemma-3-12B         |Q4_K_M|  8|TOOLS       |  8|3   |Google quality"
-    "Phi-4-14B           |Q4_K_M|  9|TOOLS+THINK |  9|4   |best <16GB ★"
-    "Qwen3-14B           |Q4_K_M|  9|TOOLS+THINK |  9|4   |top general ★"
-    "DeepSeek-R1-D-14B   |Q4_K_M|  9|THINK       |  9|4   |best reasoning <16GB"
-    "Qwen2.5-14B         |Q4_K_M|  9|TOOLS       |  9|4   |proven performer"
-    "Mistral-Small-3.1   |Q4_K_M| 14|TOOLS       | 14|5   |fast + capable 24B"
-    "Gemma-3-27B         |Q4_K_M| 16|TOOLS       | 16|5   |Google flagship"
-    "Qwen3-30B-A3B (MoE) |Q4_K_M| 16|TOOLS+THINK | 18|5   |30B at 8B speed ★"
-    "Qwen3-32B           |Q4_K_M| 19|TOOLS+THINK | 19|6   |best consumer ★"
-    "DeepSeek-R1-D-32B   |Q4_K_M| 19|THINK       | 19|6   |best local reasoning"
-    "Qwen2.5-32B         |Q4_K_M| 19|TOOLS       | 19|6   |strong coder"
-)
-
-# Auto-recommend
-_RECOMMEND=""
-for entry in "${_RANKED[@]}"; do
-    IFS='|' read -r _n _q _v _c _fg _t _note <<< "$entry"
-    _vg=$(echo "$_v" | tr -d ' ')
-    if (( HAS_GPU && VRAM >= _vg && _vg >= 0 )) || \
-       (( ! HAS_GPU && _vg == 0 )) || \
-       (( ! HAS_GPU && _fg * 2 <= RAM_GB )); then
-        _RECOMMEND="${_n// /} ${_q// /}  —  ${_note// /}"
-        break
-    fi
-done
-
-echo -e "${G}  ┌──────────────────────  MODEL RANKING  ──────────────────────┐${N}"
-echo -e "${G}  │  Sorted by quality tier. ✓ = fits your hardware.            │${N}"
-echo -e "${G}  ├────┬─────────────────────┬──────┬──────┬─────────────────────┤${N}"
-printf "${G}  │${N} %-3s${G}│${N} %-21s${G}│${N}%-6s${G}│${N}%-6s${G}│${N} %-21s${G}│${N}\n" \
-    "Fit" "Model" "Quant" " VRAM " "Notes"
-echo -e "${G}  ├────┼─────────────────────┼──────┼──────┼─────────────────────┤${N}"
-
-for entry in "${_RANKED[@]}"; do
-    IFS='|' read -r _n _q _v _c _fg _t _note <<< "$entry"
-    _vg=$(echo "$_v" | tr -d ' ')
-    _fits=" "
-    if (( HAS_GPU && _vg == 0 )) || \
-       (( HAS_GPU && VRAM >= _vg )) || \
-       (( ! HAS_GPU && _vg == 0 )) || \
-       (( ! HAS_GPU && _fg * 2 <= RAM_GB )); then
-        _fits="${G}✓${N}"
-    fi
-    _vstr="CPU"
-    (( _vg > 0 )) && _vstr="~${_vg}GB"
-    printf "${G}  │${N} %-3b${G}│${N} %-21s${G}│${N}%-6s${G}│${N}%-6s${G}│${N} %-21s${G}│${N}\n" \
-        "$_fits" "$(echo "$_n" | xargs)" "$(echo "$_q" | xargs)" "$_vstr" "$(echo "$_note" | xargs)"
-done
-echo -e "${G}  └────┴─────────────────────┴──────┴──────┴─────────────────────┘${N}"
-echo ""
-
-if [[ -n "$_RECOMMEND" ]]; then
-    echo -e "  ${G}Recommended for your hardware:${N}"
-    echo -e "    ${Y}${_RECOMMEND}${N}"
-    echo ""
-fi
-
-echo -e "  ${C}Commands:${N}  ${Y}llm-add${N}    download a model from this list"
-echo -e "            ${Y}llm-switch${N} change your active model"
-echo -e "            ${Y}llm-update${N} upgrade Ollama + Jan.ai"
-echo ""
-CHECKER_EOF
-chmod +x "$BIN_DIR/llm-checker"
-info "llm-checker written."
-
 # =============================================================================
 # STEP 14 — ALIASES
 # =============================================================================
 step "Shell aliases"
 
 cat > "$ALIAS_FILE" <<'ALIASES_EOF'
-# ── Local LLM (auto-setup) ────────────────────────────────────────────────────
+# ── Local LLM (auto-setup v3.1) ──────────────────────────────────────────────
 alias ollama-list='ollama list'
 alias ollama-pull='ollama pull'
 alias ollama-run='ollama run'
 alias gguf-list='local-models-info'
 alias gguf-run='run-gguf'
-alias ask='run-model'   # run-model reads config + passes prompt; gguf-run takes a filepath
+alias ask='run-model'       # run-model reads config + passes prompt
 alias llm-status='local-models-info'
-alias llm-checker='llm-checker'
 alias chat='llm-chat'
-alias webui='llm-web'         # Jan.ai desktop UI (falls back to Neural Terminal on WSL2)
-alias jan='llm-web'           # shorthand for Jan.ai
+alias webui='llm-web'       # Jan.ai desktop UI (falls back to Neural Terminal on WSL2)
+alias jan='llm-web'         # shorthand for Jan.ai
 alias ai='aider'
-alias llm-stop='llm-stop'
-alias llm-update='llm-update'
-alias llm-switch='llm-switch'
-alias llm-add='llm-add'
+alias doctor='llm-doctor'   # run diagnostics
 alias llm-setup='bash ~/.config/local-llm/llm-auto-setup.sh'
 
-# clear shows a compact command reference so you never forget a command
-alias clear='clear; llm-quick-help'
+# ── Override clear to show quick-help (opt-out: unalias clear) ────────────────
+# We use a function so it can call the builtin clear without infinite recursion.
+llm-clear() {
+    command clear
+    llm-quick-help
+}
+alias clear='llm-clear'
 
 llm-quick-help() {
     local G='\e[0;32m' Y='\e[1;33m' C='\e[0;36m' M='\e[0;35m' N='\e[0m'
@@ -3277,7 +3538,7 @@ llm-quick-help() {
     echo -e "  ${C}|${N}   ${Y}llm-stop${N}      stop Ollama + Jan.ai + UIs                      ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-update${N}    upgrade Ollama + Jan.ai, pull latest model      ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-status${N}    show models, disk, config                       ${C}|${N}"
-    echo -e "  ${C}|${N}   ${Y}llm-checker${N}   hardware scan + ranked model catalog            ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}doctor${N}        diagnose issues (llm-doctor)                    ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-help${N}      full command reference                          ${C}|${N}"
     echo -e "  ${C}+-----------------------------------------------------------------+${N}"
     echo ""
@@ -3295,7 +3556,7 @@ run-model() {
 
 llm-help() {
     cat <<'HELP'
-Local LLM commands:
+Local LLM commands (v3):
   chat                   Open Neural Terminal at http://localhost:8090
   jan / webui            Jan.ai desktop UI (→ Neural Terminal fallback in WSL2)
   run-model / ask        Run default GGUF model from CLI
@@ -3304,16 +3565,16 @@ Local LLM commands:
   ollama-list            List downloaded Ollama models
   ollama-start           Start the Ollama backend
   gguf-run <file> [txt]  Run a raw GGUF via llama-cpp
-    --gpu-layers N         GPU layers
+    --gpu-layers N         GPU layers (default from config)
     --threads N            CPU threads
     --batch N              Batch size
-    --ctx N                Context window
-  gguf-list              List downloaded GGUF files
+    --ctx N                Context window (default 8192)
+    --max-tokens N         Max output tokens (default 512)
+  gguf-list              List downloaded GGUF files + sizes
   llm-status             Show models, disk, and hardware config
-  llm-checker            Hardware scan + ranked model catalog + what fits your GPU
   cowork                 Open Interpreter — AI that runs code + manages files
   ai / aider             AI pair programmer with git integration
-  webui-alt              Open WebUI browser UI at http://localhost:8080 (optional install)
+  webui-alt              Open WebUI browser UI at http://localhost:8080
   llm-stop               Stop Ollama and any running UIs
   llm-update             Upgrade Ollama + Jan.ai, pull latest model
   llm-switch             Change active model (no full reinstall)
@@ -3452,7 +3713,7 @@ else
     WARN_COUNT=$(( WARN_COUNT + 1 ))
 fi
 
-for _tool in llm-stop llm-update llm-switch llm-add; do
+for _tool in llm-stop llm-update llm-switch llm-add llm-doctor; do
     if [[ -x "$BIN_DIR/$_tool" ]]; then
         info "✔ $_tool OK."
         PASS=$(( PASS + 1 ))
@@ -3482,11 +3743,11 @@ fi
 echo ""
 if (( WARN_COUNT == 0 )); then
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║   🚀  Local LLM Auto-Setup — Installation Complete!         ║${NC}"
+    echo -e "${GREEN}║   Local LLM Auto-Setup v${SCRIPT_VERSION} — Complete!               ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 else
     echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║   ⚠   Setup complete — ${WARN_COUNT} warning(s) (see below)            ║${NC}"
+    echo -e "${YELLOW}║   Setup complete — ${WARN_COUNT} warning(s). Run: llm-doctor          ║${NC}"
     echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
 fi
 echo ""
@@ -3495,12 +3756,18 @@ echo -e "    Checks passed : ${GREEN}$PASS${NC}   │   Warnings: ${YELLOW}$WARN
 # ── Hardware + model info ─────────────────────────────────────────────────────
 echo ""
 echo -e "  ${CYAN}┌─────────────────────────  YOUR SETUP  ──────────────────────────┐${NC}"
-printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "CPU"   "$CPU_MODEL"
-printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "RAM"   "${TOTAL_RAM_GB} GB"
+printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "Distro"  "${DISTRO_ID} ${UBUNTU_VERSION} (${DISTRO_CODENAME})"
+printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "Arch"    "${HOST_ARCH}"
+printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "CPU"     "$CPU_MODEL"
+printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "RAM"     "${TOTAL_RAM_GB} GB"
 if (( HAS_NVIDIA )); then
     printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU" "$GPU_NAME  (${GPU_VRAM_GB} GB VRAM) [CUDA]"
 elif (( HAS_AMD_GPU )); then
-    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU" "$GPU_NAME  (${GPU_VRAM_GB} GB VRAM) [ROCm]"
+    _rocm_line="$GPU_NAME  (${GPU_VRAM_GB} GB VRAM) [ROCm]"
+    [[ -n "$AMD_GFX_VER" ]] && _rocm_line+="  ${AMD_GFX_VER}"
+    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU" "$_rocm_line"
+elif (( HAS_INTEL_GPU )); then
+    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU" "$GPU_NAME [Intel — CPU tiers]"
 else
     printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU" "None (CPU-only)"
 fi
@@ -3550,7 +3817,6 @@ echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Ollama management ─────�
 echo -e "  ${CYAN}│${NC}   ${YELLOW}ollama-start${NC}  Start the Ollama backend                        ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}ollama-list${NC}   List all downloaded Ollama models               ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-status${NC}    Show models, disk usage, and config             ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-checker${NC}   Hardware scan + ranked model catalog            ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}gguf-run${NC}      Run a raw GGUF file directly via llama-cpp      ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}gguf-list${NC}     List all downloaded GGUF files                  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
@@ -3586,6 +3852,7 @@ if is_wsl2; then
 fi
 echo -e "    ${YELLOW}chat${NC}       → Neural Terminal  http://localhost:8090  (browser, no X needed)"
 echo -e "    ${YELLOW}run-model${NC}  → quick CLI test"
+echo -e "    ${YELLOW}doctor${NC}     → diagnose issues (llm-doctor)"
 echo -e "    ${YELLOW}llm-help${NC}   → all commands"
 is_wsl2 && { echo ""; echo -e "  ${YELLOW}  WSL2:${NC} run ${YELLOW}exec bash${NC} first, then ${YELLOW}ollama-start${NC} before launching any UI"; }
 echo ""
@@ -3601,14 +3868,10 @@ if (( WARN_COUNT > 0 )); then
     echo -e "  ${YELLOW}│${NC}  UI won't load   →  ollama-start, wait 5 s, reopen browser   ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  llama-cpp err   →  exec bash && run-model hello              ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  cowork crash    →  re-run setup (setuptools will reinstall)  ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  Full diagnosis  →  llm-doctor                               ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}└──────────────────────────────────────────────────────────────┘${NC}"
     echo ""
 fi
 
-echo -e "  🚀  Enjoy your local LLM!"
+echo -e "  Enjoy your local LLM! — v${SCRIPT_VERSION}"
 echo ""
-
-# ── Clean up sudo keepalive ───────────────────────────────────────────────────
-kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-# Reset trap to default so script exits cleanly
-trap - EXIT INT TERM
