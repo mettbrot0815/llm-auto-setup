@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v3.0.0
+# Local LLM Auto-Setup — Universal Edition v3.1.0
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04 — CPU-only through high-end GPU.
@@ -14,7 +14,7 @@
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.1.0"
 # Set this to your hosted URL to enable auto-update checks on each run:
 SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
@@ -163,7 +163,8 @@ if [[ -n "$SCRIPT_UPDATE_URL" ]]; then
     if [[ -n "$_remote_ver" && "$_remote_ver" != "$SCRIPT_VERSION" ]]; then
         echo ""
         echo -e "${YELLOW}  ┌──────────────────────────────────────────────────────────────┐${NC}"
-        echo -e "${YELLOW}  │  Update available: v${SCRIPT_VERSION} → v${_remote_ver}                           │${NC}"
+        printf "${YELLOW}  │${NC}  Update available: v%-10s → v%-10s                 ${YELLOW}│${NC}\n" \
+            "$SCRIPT_VERSION" "$_remote_ver"
         echo -e "${YELLOW}  │  Set SCRIPT_UPDATE_URL to auto-download.                    │${NC}"
         echo -e "${YELLOW}  └──────────────────────────────────────────────────────────────┘${NC}"
         echo ""
@@ -249,21 +250,30 @@ AMD_GFX_VER=""     # gfx1100 etc. — needed for HSA_OVERRIDE_GFX_VERSION
 
 # ── NVIDIA ────────────────────────────────────────────────────────────────────
 if command -v nvidia-smi &>/dev/null; then
-    # Sum VRAM across all GPUs if multiple are present; use total for model fit
+    # For model selection we use the VRAM of the largest single GPU (a model's layers
+    # are offloaded to one device; summing across GPUs would overstate capacity).
+    # For display we show the count and note the total.
+    _nv_vram_max=0
     _nv_vram_total=0
     while IFS= read -r _mib_line; do
         _mib_line="${_mib_line// /}"
-        [[ "$_mib_line" =~ ^[0-9]+$ ]] && _nv_vram_total=$(( _nv_vram_total + _mib_line ))
+        if [[ "$_mib_line" =~ ^[0-9]+$ ]]; then
+            _nv_vram_total=$(( _nv_vram_total + _mib_line ))
+            (( _mib_line > _nv_vram_max )) && _nv_vram_max=$_mib_line
+        fi
     done < <(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true)
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown NVIDIA GPU")
     DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "N/A")
     CUDA_VER_SMI=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -n1 || echo "")
-    # Count GPUs; append multi-GPU note to name
     _nv_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
-    (( _nv_count > 1 )) && GPU_NAME="${_nv_count}x ${GPU_NAME}"
-    if (( _nv_vram_total > 500 )); then
+    if (( _nv_count > 1 )); then
+        GPU_NAME="${_nv_count}x ${GPU_NAME}"
+        # Show total in name; model selection uses per-card max
+    fi
+    if (( _nv_vram_max > 500 )); then
         HAS_NVIDIA=1; HAS_GPU=1
-        GPU_VRAM_MIB=$_nv_vram_total
+        # Use largest single GPU VRAM for model tier selection
+        GPU_VRAM_MIB=$_nv_vram_max
         GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
     fi
 fi
@@ -395,6 +405,7 @@ RAM_FOR_LAYERS_GB=$(( TOTAL_RAM_GB - 4 ))
 (( RAM_FOR_LAYERS_GB < 1 )) && RAM_FOR_LAYERS_GB=1
 
 # gpu_layers_for $size_gb $num_layers → layers that fit in VRAM
+# Note: mib_per_layer() was removed — arithmetic is inlined below for clarity.
 gpu_layers_for() {
     local size_gb="$1" num_layers="$2"
     local mib_layer=$(( (size_gb * 1024) / num_layers ))
@@ -930,7 +941,7 @@ if (( HAS_NVIDIA )); then
     step "CUDA toolkit"
 
     setup_cuda_env() {
-            sudo ldconfig 2>/dev/null || true
+        sudo ldconfig 2>/dev/null || true
 
         local lib_dir=""
         # Search for libcudart.so.12* (wildcard catches .12, .12.x, .12.x.y.z)
@@ -1000,7 +1011,15 @@ if (( HAS_NVIDIA )); then
         if [[ "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_VERSION" != "24.04" ]]; then
             warn "Ubuntu $UBUNTU_VERSION not tested. Attempting anyway."
         fi
-        KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION//./}/x86_64/cuda-keyring_1.1-1_all.deb"
+        # Map uname -m → NVIDIA repo arch string
+        # x86_64 → x86_64 | aarch64 → sbsa (NVIDIA's arm64 server arch name)
+        case "$HOST_ARCH" in
+            x86_64)  _cuda_repo_arch="x86_64" ;;
+            aarch64) _cuda_repo_arch="sbsa" ;;
+            *)       _cuda_repo_arch="x86_64"
+                     warn "Unknown arch $HOST_ARCH — defaulting CUDA repo to x86_64." ;;
+        esac
+        KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION//./}/${_cuda_repo_arch}/cuda-keyring_1.1-1_all.deb"
         retry 3 5 wget -q -O "$TEMP_DIR/cuda-keyring.deb" "$KEYRING_URL" \
             || error "Failed to download CUDA keyring."
         sudo dpkg -i "$TEMP_DIR/cuda-keyring.deb" || true
@@ -1048,11 +1067,39 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
             # Persist HSA_OVERRIDE_GFX_VERSION for cards not yet in ROCm whitelist
             # (e.g. RX 6600/6700/6800/7600/7700/7900). Only write if detected.
             if [[ -n "$AMD_GFX_VER" ]]; then
-                _gfx_num="${AMD_GFX_VER#gfx}"
-                _gfx_major="${_gfx_num:0:${#_gfx_num}-2}"
-                _gfx_minor="${_gfx_num: -2:1}"
-                _gfx_patch="${_gfx_num: -1}"
-                _hsa_ver="${_gfx_major}.${_gfx_minor}.${_gfx_patch}"
+                # Convert gfxNNNN[x] → major.minor.patch dot-notation for HSA_OVERRIDE_GFX_VERSION.
+                # Handles all known formats:
+                #   gfx803   → 8.0.3    (Fiji/Tonga,    3-digit)
+                #   gfx906   → 9.0.6    (Vega20,        3-digit)
+                #   gfx90a   → 9.0.10   (Arcturus,      2-digit base + letter suffix)
+                #   gfx1010  → 10.1.0   (Navi10,        4-digit)
+                #   gfx1100  → 11.0.0   (Navi31/RX7900, 4-digit)
+                #   gfx1103  → 11.0.3   (RDNA3 iGPU,    4-digit)
+                # Strategy: check for letter suffix first, then split by digit count.
+                _gfx_raw="${AMD_GFX_VER#gfx}"
+                _gfx_patch_suffix=""
+                _gfx_digits="$_gfx_raw"
+                if [[ "$_gfx_raw" =~ ^([0-9]+)([a-f])$ ]]; then
+                    _gfx_digits="${BASH_REMATCH[1]}"
+                    case "${BASH_REMATCH[2]}" in
+                        a) _gfx_patch_suffix="10" ;; b) _gfx_patch_suffix="11" ;;
+                        c) _gfx_patch_suffix="12" ;; d) _gfx_patch_suffix="13" ;;
+                        e) _gfx_patch_suffix="14" ;; f) _gfx_patch_suffix="15" ;;
+                    esac
+                fi
+                _gfx_len="${#_gfx_digits}"
+                if (( _gfx_len == 2 && ${#_gfx_patch_suffix} > 0 )); then
+                    # e.g. gfx90a: digits=90, patch_suffix=10 → 9.0.10
+                    _hsa_ver="${_gfx_digits:0:1}.${_gfx_digits:1:1}.${_gfx_patch_suffix}"
+                elif (( _gfx_len == 3 )); then
+                    _patch="${_gfx_patch_suffix:-${_gfx_digits:2:1}}"
+                    _hsa_ver="${_gfx_digits:0:1}.0.${_patch}"
+                elif (( _gfx_len >= 4 )); then
+                    _patch="${_gfx_patch_suffix:-${_gfx_digits:3}}"
+                    _hsa_ver="${_gfx_digits:0:2}.${_gfx_digits:2:1}.${_patch}"
+                else
+                    _hsa_ver="$_gfx_raw"   # unexpected format — pass through as-is
+                fi
                 printf '# HSA_OVERRIDE_GFX_VERSION: allows RDNA2/3 cards not in ROCm whitelist\n' >> "$_RC"
                 printf 'export HSA_OVERRIDE_GFX_VERSION="%s"\n' "$_hsa_ver" >> "$_RC"
                 printf 'export ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-0}\n' >> "$_RC"
@@ -1092,11 +1139,20 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
             setup_rocm_env
         else
             warn "Failed to download amdgpu-install deb — trying manual apt path…"
-            # Fallback: direct apt install of minimal ROCm components
-            wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null                 | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg || true
-            echo "deb [arch=amd64] https://repo.radeon.com/rocm/apt/6.3 ${UBUNTU_VERSION} main"                 | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
+            # Fallback: direct apt install of minimal ROCm components.
+            # Discover the latest ROCm release tag from the repo index instead of
+            # hardcoding a version number that will go stale.
+            _rocm_apt_arch="amd64"
+            [[ "$HOST_ARCH" == "aarch64" ]] && _rocm_apt_arch="arm64"
+            _rocm_latest=$(wget -qO- "https://repo.radeon.com/rocm/apt/" 2>/dev/null \
+                | grep -oP '(?<=href=")[0-9]+\.[0-9]+(?=/)' | sort -V | tail -1 || echo "6.3")
+            wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null \
+                | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg || true
+            echo "deb [arch=${_rocm_apt_arch}] https://repo.radeon.com/rocm/apt/${_rocm_latest} ${DISTRO_CODENAME} main" \
+                | sudo tee /etc/apt/sources.list.d/rocm.list >/dev/null
             sudo apt-get update -qq || true
-            sudo apt-get install -y rocm-hip-sdk rocm-opencl-sdk                 || warn "ROCm apt install failed — check https://rocm.docs.amd.com"
+            sudo apt-get install -y rocm-hip-sdk rocm-opencl-sdk \
+                || warn "ROCm apt install failed — check https://rocm.docs.amd.com"
             setup_rocm_env
         fi
         # Add current user to render + video groups (required for GPU access)
@@ -1204,12 +1260,30 @@ if (( LLAMA_INSTALLED == 0 )); then
         # Auto-detect ROCm gfx target for HSA_OVERRIDE_GFX_VERSION
         # Needed for RDNA2/3 cards not yet in ROCm's whitelist (e.g. RX 6000/7000 series)
         if [[ -n "$AMD_GFX_VER" ]]; then
-            # Extract numeric version (gfx1100 → 11.0.0) for HSA_OVERRIDE
-            _gfx_num="${AMD_GFX_VER#gfx}"
-            _gfx_major="${_gfx_num:0:${#_gfx_num}-2}"
-            _gfx_minor="${_gfx_num: -2:1}"
-            _gfx_patch="${_gfx_num: -1}"
-            export HSA_OVERRIDE_GFX_VERSION="${_gfx_major}.${_gfx_minor}.${_gfx_patch}"
+            # Convert gfxNNNN[x] → major.minor.patch (same logic as setup_rocm_env above)
+            _gfx_raw="${AMD_GFX_VER#gfx}"
+            _gfx_patch_suffix="" _gfx_digits="$_gfx_raw"
+            if [[ "$_gfx_raw" =~ ^([0-9]+)([a-f])$ ]]; then
+                _gfx_digits="${BASH_REMATCH[1]}"
+                case "${BASH_REMATCH[2]}" in
+                    a) _gfx_patch_suffix="10" ;; b) _gfx_patch_suffix="11" ;;
+                    c) _gfx_patch_suffix="12" ;; d) _gfx_patch_suffix="13" ;;
+                    e) _gfx_patch_suffix="14" ;; f) _gfx_patch_suffix="15" ;;
+                esac
+            fi
+            _gfx_len="${#_gfx_digits}"
+            if (( _gfx_len == 2 && ${#_gfx_patch_suffix} > 0 )); then
+                _hsa_ver="${_gfx_digits:0:1}.${_gfx_digits:1:1}.${_gfx_patch_suffix}"
+            elif (( _gfx_len == 3 )); then
+                _patch="${_gfx_patch_suffix:-${_gfx_digits:2:1}}"
+                _hsa_ver="${_gfx_digits:0:1}.0.${_patch}"
+            elif (( _gfx_len >= 4 )); then
+                _patch="${_gfx_patch_suffix:-${_gfx_digits:3}}"
+                _hsa_ver="${_gfx_digits:0:2}.${_gfx_digits:2:1}.${_patch}"
+            else
+                _hsa_ver="$_gfx_raw"
+            fi
+            export HSA_OVERRIDE_GFX_VERSION="$_hsa_ver"
             info "Set HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION} for ${AMD_GFX_VER}"
         fi
         MAKE_JOBS="$HW_THREADS" \
@@ -1222,7 +1296,9 @@ if (( LLAMA_INSTALLED == 0 )); then
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python CPU build failed. Check logs."
     fi
-    LLAMA_INSTALLED=1  # attempt was made; check_python_module will catch real failures
+    # Mark that a source build was attempted (regardless of success).
+    # LLAMA_INSTALLED will be validated by check_python_module immediately below.
+    LLAMA_INSTALLED=1
 fi
 
 if check_python_module llama_cpp; then
@@ -2544,11 +2620,11 @@ function renderMarkdown(raw) {
   t = t.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
   // Horizontal rule
   t = t.replace(/^---+$/gm, '<hr>');
-  // Tables (simple)
+  // Tables (simple) — cell content is HTML-escaped to prevent XSS
   t = t.replace(/(\|.+\|\n\|[-| :]+\|\n(?:\|.+\|\n?)+)/g, tbl => {
     const rows = tbl.trim().split('\n');
-    const header = rows[0].split('|').filter(c=>c.trim()).map(c=>`<th>${c.trim()}</th>`).join('');
-    const body = rows.slice(2).map(r=>'<tr>'+r.split('|').filter(c=>c.trim()).map(c=>`<td>${c.trim()}</td>`).join('')+'</tr>').join('');
+    const header = rows[0].split('|').filter(c=>c.trim()).map(c=>`<th>${escHtml(c.trim())}</th>`).join('');
+    const body = rows.slice(2).map(r=>'<tr>'+r.split('|').filter(c=>c.trim()).map(c=>`<td>${escHtml(c.trim())}</td>`).join('')+'</tr>').join('');
     return `<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
   });
   // Lists
@@ -2826,7 +2902,16 @@ else
 fi
 
 # ── Kill any stale HTTP server on our port ────────────────────────────────────
-OLD_PID=$(lsof -ti tcp:$HTTP_PORT 2>/dev/null || true)
+# Prefer ss (iproute2, always present on Ubuntu) over lsof (optional package).
+# fuser is a POSIX fallback if ss somehow isn't available.
+OLD_PID=""
+if command -v ss &>/dev/null; then
+    OLD_PID=$(ss -tlnp "sport = :$HTTP_PORT" 2>/dev/null \
+        | awk '/LISTEN/{match($0,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1 || true)
+fi
+if [[ -z "$OLD_PID" ]] && command -v fuser &>/dev/null; then
+    OLD_PID=$(fuser "${HTTP_PORT}/tcp" 2>/dev/null | tr -d ' ' || true)
+fi
 if [[ -n "$OLD_PID" ]]; then
     kill "$OLD_PID" 2>/dev/null || true
     sleep 0.5
@@ -3391,7 +3476,7 @@ info "  aider   — AI pair programmer (git-integrated, edit files directly)"
 step "Shell aliases"
 
 cat > "$ALIAS_FILE" <<'ALIASES_EOF'
-# ── Local LLM (auto-setup v3) ─────────────────────────────────────────────────
+# ── Local LLM (auto-setup v3.1) ──────────────────────────────────────────────
 alias ollama-list='ollama list'
 alias ollama-pull='ollama pull'
 alias ollama-run='ollama run'
@@ -3772,7 +3857,5 @@ fi
 echo -e "  Enjoy your local LLM! — v${SCRIPT_VERSION}"
 echo ""
 
-# ── Clean up sudo keepalive ───────────────────────────────────────────────────
-kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-# Reset trap to default so script exits cleanly
-trap - EXIT INT TERM
+# ── Sudo keepalive is cleaned up by the EXIT trap set in Step 1 ──────────────
+# (No manual kill needed here — trap fires on normal exit too.)
