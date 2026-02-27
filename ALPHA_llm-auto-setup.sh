@@ -66,7 +66,12 @@ highlight() {
 ask_yes_no() {
     local prompt="$1" ans=""
     if [[ ! -t 0 ]]; then warn "Non-interactive — treating '$prompt' as No."; return 1; fi
-    read -r -p "$(echo -e "${YELLOW}?${NC} $prompt (y/N) ")" -n 1 ans; echo
+    printf "${YELLOW}?${NC} %s (y/N) " "$prompt"
+    read -r -n 1 ans
+    # Drain any trailing newline left in the buffer (prevents contaminating
+    # the next read call when the user types 'y<Enter>').
+    read -rs -t 0.1 _ 2>/dev/null || true
+    echo
     [[ "$ans" =~ ^[Yy]$ ]] && return 0 || return 1
 }
 
@@ -82,14 +87,17 @@ retry() {
 }
 
 # is_wsl2: returns 0 if running inside WSL (1 or 2), 1 otherwise.
-# Works without uname -r WSL-specific patterns (they vary by distro/kernel).
+# Checks WSL_DISTRO_NAME env var first (always set by WSL), then falls
+# back to /proc/version for custom kernels that may not include "Microsoft".
 is_wsl2() {
-    grep -qi microsoft /proc/version 2>/dev/null
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qi microsoft /proc/version 2>/dev/null
 }
 
 # get_distro_id: returns lowercase distro ID (ubuntu, debian, linuxmint, pop, …)
 get_distro_id() {
-    grep -m1 '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]' || echo "unknown"
+    local _id
+    _id=$(grep -m1 '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+    echo "${_id:-unknown}"
 }
 
 # get_distro_codename: returns ubuntu-style codename (jammy, noble, bookworm, …)
@@ -109,9 +117,9 @@ command -v sudo &>/dev/null || error "sudo is required but not found. Install it
 # ── Architecture check ────────────────────────────────────────────────────────
 HOST_ARCH=$(uname -m)
 case "$HOST_ARCH" in
-    x86_64)  ARCH_OK=1 ;;
-    aarch64) ARCH_OK=1; warn "ARM64 detected — CUDA wheels unavailable; will build from source." ;;
-    *)       warn "Untested architecture: $HOST_ARCH. Proceeding anyway." ; ARCH_OK=1 ;;
+    x86_64)  : ;;
+    aarch64) warn "ARM64 detected — CUDA wheels unavailable; will build from source." ;;
+    *)       warn "Untested architecture: $HOST_ARCH. Proceeding anyway." ;;
 esac
 
 # ── Distro check ──────────────────────────────────────────────────────────────
@@ -250,31 +258,36 @@ AMD_GFX_VER=""     # gfx1100 etc. — needed for HSA_OVERRIDE_GFX_VERSION
 
 # ── NVIDIA ────────────────────────────────────────────────────────────────────
 if command -v nvidia-smi &>/dev/null; then
-    # For model selection we use the VRAM of the largest single GPU (a model's layers
-    # are offloaded to one device; summing across GPUs would overstate capacity).
-    # For display we show the count and note the total.
+    # Single nvidia-smi call fetches name, driver, and VRAM for all GPUs at once.
+    # For model selection we use the largest single GPU VRAM (a model's layers are
+    # offloaded to one device; summing across GPUs would overstate capacity).
     _nv_vram_max=0
     _nv_vram_total=0
-    while IFS= read -r _mib_line; do
-        _mib_line="${_mib_line// /}"
-        if [[ "$_mib_line" =~ ^[0-9]+$ ]]; then
-            _nv_vram_total=$(( _nv_vram_total + _mib_line ))
-            (( _mib_line > _nv_vram_max )) && _nv_vram_max=$_mib_line
+    _nv_count=0
+    _nv_first_name=""
+    _nv_first_driver=""
+    while IFS=',' read -r _nv_name _nv_driver _nv_mib; do
+        _nv_name="${_nv_name## }"; _nv_name="${_nv_name%% }"
+        _nv_driver="${_nv_driver## }"; _nv_driver="${_nv_driver%% }"
+        _nv_mib="${_nv_mib// /}"
+        (( _nv_count == 0 )) && { _nv_first_name="$_nv_name"; _nv_first_driver="$_nv_driver"; }
+        _nv_count=$(( _nv_count + 1 ))
+        if [[ "$_nv_mib" =~ ^[0-9]+$ ]]; then
+            _nv_vram_total=$(( _nv_vram_total + _nv_mib ))
+            (( _nv_mib > _nv_vram_max )) && _nv_vram_max=$_nv_mib
         fi
-    done < <(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true)
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown NVIDIA GPU")
-    DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "N/A")
+    done < <(nvidia-smi --query-gpu=name,driver_version,memory.total \
+                        --format=csv,noheader,nounits 2>/dev/null || true)
+    GPU_NAME="${_nv_first_name:-Unknown NVIDIA GPU}"
+    DRIVER_VER="${_nv_first_driver:-N/A}"
+    # CUDA version from the nvidia-smi header (one lightweight call)
     CUDA_VER_SMI=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -n1 || echo "")
-    _nv_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
-    if (( _nv_count > 1 )); then
-        GPU_NAME="${_nv_count}x ${GPU_NAME}"
-        # Show total in name; model selection uses per-card max
-    fi
+    (( _nv_count > 1 )) && GPU_NAME="${_nv_count}x ${GPU_NAME}"
     if (( _nv_vram_max > 500 )); then
         HAS_NVIDIA=1; HAS_GPU=1
         # Use largest single GPU VRAM for model tier selection
         GPU_VRAM_MIB=$_nv_vram_max
-        GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
+        GPU_VRAM_GB=$(( (GPU_VRAM_MIB + 512) / 1024 ))
     fi
 fi
 
@@ -296,12 +309,12 @@ if (( !HAS_NVIDIA )); then
     done
     if (( _best_amd_mib > 512 )); then
         GPU_VRAM_MIB=$_best_amd_mib
-        GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
+        GPU_VRAM_GB=$(( (GPU_VRAM_MIB + 512) / 1024 ))
         HAS_AMD_GPU=1; HAS_GPU=1
         # GPU name: prefer rocm-smi, fall back to lspci
         if command -v rocm-smi &>/dev/null; then
             GPU_NAME=$(rocm-smi --showproductname 2>/dev/null \
-                       | grep -oP '(?<=GPU\[0\] : ).*' | head -n1 | xargs \
+                       | grep -i 'GPU\[0\]' | awk -F':' '{print $NF}' | xargs \
                        || echo "AMD GPU")
         else
             GPU_NAME=$(lspci 2>/dev/null \
@@ -309,14 +322,16 @@ if (( !HAS_NVIDIA )); then
                        | grep -iE "AMD|ATI|Radeon|gfx" \
                        | head -n1 | sed 's/.*: //' | xargs || echo "AMD GPU")
         fi
-        # ROCm version and gfx target if installed
+        # ROCm version and gfx target if installed — cache rocminfo output (one call)
         if command -v rocminfo &>/dev/null; then
-            AMD_ROCM_VER=$(rocminfo 2>/dev/null \
-                           | grep -oP 'Runtime Version:\s*\K[0-9.]+' | head -n1 || echo "")
-            AMD_GFX_VER=$(rocminfo 2>/dev/null \
-                          | grep -oP 'gfx\d+[a-z]*' | head -n1 || echo "")
+            _rocminfo_out=$(rocminfo 2>/dev/null || true)
+            AMD_ROCM_VER=$(echo "$_rocminfo_out" | grep -oP 'Runtime Version:\s*\K[0-9.]+' | head -n1 || echo "")
+            AMD_GFX_VER=$(echo "$_rocminfo_out"  | grep -oP 'gfx\d+[a-z]*' | head -n1 || echo "")
         fi
-        DRIVER_VER=$(< /sys/class/drm/card0/device/driver/module/version 2>/dev/null \
+        # Use the best card's sysfs path to find the driver version (avoids assuming card0)
+        _best_card_dir=$(dirname "$(dirname "$_best_amd_card")")
+        _best_card_name=$(basename "$_best_card_dir")
+        DRIVER_VER=$(< "/sys/class/drm/${_best_card_name}/device/driver/module/version" 2>/dev/null \
                      || uname -r)
     fi
 fi
@@ -557,13 +572,25 @@ fi
 (( HW_THREADS < 1 )) && HW_THREADS=1
 (( HW_THREADS > 16 )) && HW_THREADS=16
 
-# Batch size: scale with VRAM; larger = more throughput on GPU
-if (( GPU_VRAM_GB >= 24 )); then  BATCH=2048
-elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
-elif (( GPU_VRAM_GB >= 8 ));  then BATCH=512
-elif (( GPU_VRAM_GB >= 4 ));  then BATCH=256
-else                               BATCH=128
-fi
+# calculate_batch: set BATCH based on available GPU VRAM (or RAM for CPU-only).
+# Larger batch = more tokens processed in parallel = higher throughput.
+calculate_batch() {
+    if (( HAS_GPU )); then
+        if   (( GPU_VRAM_GB >= 24 )); then BATCH=2048
+        elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
+        elif (( GPU_VRAM_GB >= 8  )); then BATCH=512
+        elif (( GPU_VRAM_GB >= 4  )); then BATCH=256
+        else                               BATCH=128
+        fi
+    else
+        # CPU-only: scale with system RAM for better prompt processing speed
+        if   (( TOTAL_RAM_GB >= 32 )); then BATCH=512
+        elif (( TOTAL_RAM_GB >= 16 )); then BATCH=256
+        else                                BATCH=128
+        fi
+    fi
+}
+calculate_batch
 
 # Print recommendation box
 VRAM_USED_GB=$(( (GPU_LAYERS * MIB_PER_LAYER) / 1024 ))
@@ -736,12 +763,7 @@ if ! ask_yes_no "Proceed with this configuration?"; then
     else
         GPU_LAYERS=0; CPU_LAYERS="${M[layers]}"
     fi
-    if (( GPU_VRAM_GB >= 24 )); then  BATCH=2048
-    elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
-    elif (( GPU_VRAM_GB >= 8 ));  then BATCH=512
-    elif (( GPU_VRAM_GB >= 4 ));  then BATCH=256
-    else                               BATCH=128
-    fi
+    calculate_batch
 fi  # end manual override block
 MODEL_SIZE_GB="${M[size_gb]}"
 if (( DISK_FREE_GB < MODEL_SIZE_GB + 2 )); then
@@ -775,7 +797,7 @@ PYTHON_BIN="python3"
 if (( PYVER_MAJOR < 3 || (PYVER_MAJOR == 3 && PYVER_MINOR < 10) )); then
     warn "Python $PYVER_RAW is too old (need 3.10+). Installing Python 3.11 via deadsnakes PPA…"
     sudo apt-get install -y software-properties-common 2>/dev/null || true
-    if ! grep -rq "deadsnakes" /etc/apt/sources.list.d/ 2>/dev/null; then
+    if ! grep -rq "deadsnakes" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
         sudo add-apt-repository -y ppa:deadsnakes/ppa \
             || warn "Failed to add deadsnakes PPA — will try system python."
         sudo apt-get update -qq || true
@@ -816,7 +838,7 @@ if "$PYTHON_BIN" -m pip install --dry-run pip 2>&1 | grep -q "externally-managed
 fi
 
 # If pip still not available, bootstrap it
-if ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -m pip --version &>/dev/null; then
     info "pip not found — bootstrapping via get-pip.py…"
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$TEMP_DIR/get-pip.py" \
         && "$PYTHON_BIN" "$TEMP_DIR/get-pip.py" --quiet ${PIP_BSP_FLAG:+"$PIP_BSP_FLAG"} \
@@ -943,20 +965,19 @@ if (( HAS_NVIDIA )); then
     setup_cuda_env() {
         sudo ldconfig 2>/dev/null || true
 
-        local lib_dir=""
-        # Search for libcudart.so.12* (wildcard catches .12, .12.x, .12.x.y.z)
-        # Also check the standard CUDA targets path which find sometimes misses at low depth
-        while IFS= read -r -d '' p; do lib_dir="$(dirname "$p")"; break
-        done < <(find /usr/local /usr/lib /opt \
-                    -maxdepth 8 \
-                    \( -name "libcudart.so.12" -o -name "libcudart.so.12.*" \) \
-                    -print0 2>/dev/null)
-
-        # Fallback: check ldconfig cache directly
+        # Reuse CUDA_LIB_DIR cached by the detection block above; run find only if empty.
+        local lib_dir="${CUDA_LIB_DIR:-}"
         if [[ -z "$lib_dir" ]]; then
-            local ldcache_path
-            ldcache_path=$(ldconfig -p 2>/dev/null | grep 'libcudart\.so\.12' | awk '{print $NF}' | head -n1 || true)
-            [[ -n "$ldcache_path" ]] && lib_dir="$(dirname "$ldcache_path")"
+            lib_dir=$(find /usr/local /usr/lib /opt -maxdepth 8 \
+                          \( -name "libcudart.so.12" -o -name "libcudart.so.12.*" \) \
+                          -print 2>/dev/null | head -n1 | xargs -r dirname)
+        fi
+
+        # Fallback: ldconfig cache
+        if [[ -z "$lib_dir" ]]; then
+            local _ldc
+            _ldc=$(ldconfig -p 2>/dev/null | grep 'libcudart\.so\.12' | awk '{print $NF}' | head -n1 || true)
+            [[ -n "$_ldc" ]] && lib_dir="$(dirname "$_ldc")"
         fi
 
         if [[ -z "$lib_dir" ]]; then
@@ -966,15 +987,18 @@ if (( HAS_NVIDIA )); then
             return 1
         fi
 
+        # Update global cache so the final summary can reuse it without another find
+        CUDA_LIB_DIR="$lib_dir"
+
         export LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"
         info "CUDA libs found at: $lib_dir"
 
         # Walk up to find the CUDA root (handles /usr/local/cuda-12.x/targets/arch/lib)
         local base_dir; base_dir="$(echo "$lib_dir" | sed 's|/targets/.*||; s|/lib[^/]*$||')"
         local bin_dir="$base_dir/bin"
-        [[ -d "$bin_dir" ]] && { export PATH="$bin_dir:$PATH"; info "CUDA bin: $bin_dir"; }
+        [[ -d "$bin_dir" && -x "$bin_dir/nvcc" ]] && { export PATH="$bin_dir:$PATH"; info "CUDA bin: $bin_dir"; }
 
-        _RC="$HOME/.bashrc"
+        local _RC="$HOME/.bashrc"
         ! grep -q "# CUDA toolkit — llm-auto-setup" "$_RC" 2>/dev/null && {
             { echo ""; echo "# CUDA toolkit — llm-auto-setup"
               [[ -d "$bin_dir" ]] && echo "export PATH=\"${bin_dir}:\$PATH\""
@@ -983,20 +1007,27 @@ if (( HAS_NVIDIA )); then
     }
 
     # Three-probe CUDA detection (PATH → filesystem → ldconfig/dpkg)
+    # Cache the libcudart path in CUDA_LIB_DIR for reuse in setup_cuda_env and later checks.
     CUDA_PRESENT=0
+    CUDA_LIB_DIR=""
     if ! command -v nvcc &>/dev/null; then
-        NVCC_PATH=$(find /usr/local /usr/lib/cuda /opt/cuda -maxdepth 6 -name nvcc -type f 2>/dev/null | head -n1 || true)
+        NVCC_PATH=$(find /usr/local /usr/lib/cuda /opt/cuda -maxdepth 6 -name nvcc -executable -type f 2>/dev/null | head -n1 || true)
         [[ -n "$NVCC_PATH" ]] && { export PATH="$(dirname "$NVCC_PATH"):$PATH"; info "nvcc at $NVCC_PATH"; }
     fi
     command -v nvcc &>/dev/null && CUDA_PRESENT=1
     if (( !CUDA_PRESENT )); then
-        # Wildcard: catches libcudart.so.12, libcudart.so.12.x, libcudart.so.12.x.y.z
-        find /usr/local /usr/lib /opt -maxdepth 8 \
-            \( -name "libcudart.so.12" -o -name "libcudart.so.12.*" \) 2>/dev/null | grep -q . \
-            && CUDA_PRESENT=1
+        # Single find — cache the result for reuse in setup_cuda_env
+        CUDA_LIB_DIR=$(find /usr/local /usr/lib /opt -maxdepth 8 \
+            \( -name "libcudart.so.12" -o -name "libcudart.so.12.*" \) \
+            -print 2>/dev/null | head -n1 | xargs -r dirname)
+        [[ -n "$CUDA_LIB_DIR" ]] && CUDA_PRESENT=1
     fi
     if (( !CUDA_PRESENT )); then
-        ldconfig -p 2>/dev/null | grep -q 'libcudart\.so\.12' && CUDA_PRESENT=1
+        _ldcache=$(ldconfig -p 2>/dev/null | grep 'libcudart\.so\.12' | awk '{print $NF}' | head -n1 || true)
+        if [[ -n "$_ldcache" ]]; then
+            CUDA_LIB_DIR=$(dirname "$_ldcache")
+            CUDA_PRESENT=1
+        fi
     fi
     if (( !CUDA_PRESENT )); then
         dpkg -l 'cuda-toolkit-*' 'cuda-libraries-*' 2>/dev/null | grep -q '^ii' && CUDA_PRESENT=1
@@ -1007,7 +1038,7 @@ if (( HAS_NVIDIA )); then
         setup_cuda_env || true
     else
         info "Installing CUDA toolkit…"
-        UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
+        # $UBUNTU_VERSION is already set in pre-flight; no need to re-query lsb_release
         if [[ "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_VERSION" != "24.04" ]]; then
             warn "Ubuntu $UBUNTU_VERSION not tested. Attempting anyway."
         fi
@@ -1122,7 +1153,7 @@ if (( HAS_AMD_GPU && !HAS_NVIDIA )); then
         setup_rocm_env
     else
         info "Installing ROCm via amdgpu-install…"
-        UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
+        # $UBUNTU_VERSION is already set in pre-flight; no need to re-query lsb_release
         # amdgpu-install is the official AMD installer — handles kernel modules + ROCm
         # Discover the current deb filename dynamically from the /latest/ directory listing
         # so we don't hardcode a version that may 404 after AMD ships a new release.
@@ -1188,7 +1219,7 @@ check_python_module() { "$VENV_DIR/bin/python3" -c "import $1" 2>/dev/null; }
 
 # ── Build flags tuned to detected CPU + GPU features ─────────────────────────
 CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
-(( HAS_NVIDIA ))  && CMAKE_ARGS+=" -DGGML_CUDA=ON -DLLAMA_CUBLAS=ON"
+(( HAS_NVIDIA ))  && CMAKE_ARGS+=" -DGGML_CUDA=ON"
 (( HAS_AMD_GPU )) && CMAKE_ARGS+=" -DGGML_HIPBLAS=ON"
 (( HAS_AVX512 ))  && CMAKE_ARGS+=" -DGGML_AVX512=ON -DGGML_AVX2=ON -DGGML_FMA=ON"
 (( !HAS_AVX512 && HAS_AVX2 )) && CMAKE_ARGS+=" -DGGML_AVX2=ON -DGGML_FMA=ON"
@@ -1252,7 +1283,7 @@ fi
 if (( LLAMA_INSTALLED == 0 )); then
     if (( HAS_NVIDIA )); then
         warn "No pre-built CUDA wheel found — building from source (~5–10 min)…"
-        MAKE_JOBS="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
+        CMAKE_BUILD_PARALLEL_LEVEL="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python CUDA build failed. Check logs."
     elif (( HAS_AMD_GPU )); then
@@ -1286,13 +1317,13 @@ if (( LLAMA_INSTALLED == 0 )); then
             export HSA_OVERRIDE_GFX_VERSION="$_hsa_ver"
             info "Set HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION} for ${AMD_GFX_VER}"
         fi
-        MAKE_JOBS="$HW_THREADS" \
-        CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DGGML_HIPBLAS=ON" \
+        CMAKE_BUILD_PARALLEL_LEVEL="$HW_THREADS" \
+        CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS -DGGML_HIPBLAS=ON" \
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python ROCm build failed. Check logs."
     else
         info "CPU-only build — compiling llama-cpp-python (~3–5 min)…"
-        MAKE_JOBS="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
+        CMAKE_BUILD_PARALLEL_LEVEL="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
         pip install llama-cpp-python --no-cache-dir \
             || warn "llama-cpp-python CPU build failed. Check logs."
     fi
@@ -1672,8 +1703,9 @@ else
         fail "Ollama service not active → sudo systemctl start ollama"
     fi
 fi
-if curl -sf --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    N=$(curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null | grep -o '"name"' | wc -l || echo 0)
+_api_resp=$(curl -sf --max-time 3 http://127.0.0.1:11434/api/tags 2>/dev/null || true)
+if [[ -n "$_api_resp" ]]; then
+    N=$(echo "$_api_resp" | grep -o '"name"' | wc -l || echo 0)
     ok "Ollama API reachable (${N} model(s) registered)"
 else
     fail "Ollama API not reachable on port 11434 → ollama-start"
@@ -1709,10 +1741,11 @@ echo ""
 # ── Models ───────────────────────────────────────────────────────────────────
 echo -e "${CYAN}[ Models ]${NC}"
 GGUF_DIR="$HOME/local-llm-models/gguf"
-if ls "$GGUF_DIR"/*.gguf &>/dev/null 2>&1; then
-    while IFS= read -r f; do
-        ok "GGUF: $(basename "$f")  ($(du -sh "$f" 2>/dev/null | cut -f1))"
-    done < <(ls "$GGUF_DIR"/*.gguf 2>/dev/null)
+_gguf_files=("$GGUF_DIR"/*.gguf)
+if [[ -f "${_gguf_files[0]}" ]]; then
+    for _f in "${_gguf_files[@]}"; do
+        ok "GGUF: $(basename "$_f")  ($(du -sh "$_f" 2>/dev/null | cut -f1))"
+    done
 else
     warn "No GGUF files in $GGUF_DIR → llm-add"
 fi
@@ -2138,7 +2171,6 @@ info "Helper scripts written."
 step "Web UI"
 
 # Standalone HTML chat UI (zero dependencies — just open in browser)
-HTML_UI="$GUI_DIR/llm-chat.html"
 python3 - <<'PYEOF_HTML'
 import os
 html = r"""<!DOCTYPE html>
@@ -3205,9 +3237,10 @@ if [[ "${_tool_sel:-}" == *"2"* ]]; then
     if ! command -v micro &>/dev/null; then
         info "Installing micro editor…"
         mkdir -p "$BIN_DIR"
-        if curl -fsSL https://getmic.ro | bash 2>/dev/null; then
-            mv micro "$BIN_DIR/micro" 2>/dev/null \
-                || sudo mv micro /usr/local/bin/micro 2>/dev/null || true
+        # Run in TEMP_DIR so the downloaded binary lands in a known location
+        if ( cd "$TEMP_DIR" && curl -fsSL https://getmic.ro | bash 2>/dev/null ); then
+            mv "$TEMP_DIR/micro" "$BIN_DIR/micro" 2>/dev/null \
+                || sudo mv "$TEMP_DIR/micro" /usr/local/bin/micro 2>/dev/null || true
             info "micro: OK"
         else
             warn "micro install failed — try: sudo apt-get install micro"
@@ -3597,10 +3630,9 @@ PASS=0; WARN_COUNT=0
 
 # ── GPU runtime (CUDA or ROCm) ────────────────────────────────────────────────
 if (( HAS_NVIDIA )); then
+    # Reuse CUDA_LIB_DIR cached during CUDA setup — no need for another find scan
     CUDA_FOUND=0
-    find /usr/local /usr/lib /opt -maxdepth 8 \
-        \( -name "libcudart.so.12" -o -name "libcudart.so.12.*" \) 2>/dev/null | grep -q . \
-        && CUDA_FOUND=1
+    [[ -n "${CUDA_LIB_DIR:-}" ]] && CUDA_FOUND=1
     (( !CUDA_FOUND )) && ldconfig -p 2>/dev/null | grep -q 'libcudart\.so\.12' && CUDA_FOUND=1
     if (( CUDA_FOUND )); then
         info "✔ CUDA runtime found."
@@ -3767,12 +3799,17 @@ else
     printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU" "None (CPU-only)"
 fi
 if [[ -f "$MODEL_CONFIG" ]]; then
-    # shellcheck source=/dev/null
-    source "$MODEL_CONFIG" 2>/dev/null || true
+    # Parse config safely with awk — never source shell files with user-writable paths
+    _cfg_model_name=$(awk -F'"' '/^MODEL_NAME=/{print $2}' "$MODEL_CONFIG" 2>/dev/null || true)
+    _cfg_model_caps=$(awk -F'"' '/^MODEL_CAPS=/{print $2}' "$MODEL_CONFIG" 2>/dev/null || true)
+    _cfg_gpu_layers=$(awk -F'"' '/^GPU_LAYERS=/{print $2}' "$MODEL_CONFIG" 2>/dev/null || true)
+    _cfg_model_layers=$(awk -F'"' '/^MODEL_LAYERS=/{print $2}' "$MODEL_CONFIG" 2>/dev/null || true)
+    _cfg_hw_threads=$(awk -F'"' '/^HW_THREADS=/{print $2}' "$MODEL_CONFIG" 2>/dev/null || true)
+    _cfg_batch=$(awk -F'"' '/^BATCH=/{print $2}' "$MODEL_CONFIG" 2>/dev/null || true)
     echo -e "  ${CYAN}├────────────────────────────────────────────────────────────────┤${NC}"
-    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "Model"      "${MODEL_NAME:-?}"
-    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "Caps"       "${MODEL_CAPS:-none}"
-    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU layers" "${GPU_LAYERS:-?} / ${MODEL_LAYERS:-?}   threads: ${HW_THREADS:-?}   batch: ${BATCH:-?}"
+    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "Model"      "${_cfg_model_name:-?}"
+    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "Caps"       "${_cfg_model_caps:-none}"
+    printf "  ${CYAN}│${NC}  %-16s  %-43s${CYAN}│${NC}\n" "GPU layers" "${_cfg_gpu_layers:-?} / ${_cfg_model_layers:-?}   threads: ${_cfg_hw_threads:-?}   batch: ${_cfg_batch:-?}"
 fi
 echo -e "  ${CYAN}└────────────────────────────────────────────────────────────────┘${NC}"
 
@@ -3855,9 +3892,9 @@ echo ""
 # ── Troubleshooting ───────────────────────────────────────────────────────────
 if (( WARN_COUNT > 0 )); then
     echo -e "  ${YELLOW}┌──────────────────────  TROUBLESHOOTING  ────────────────────┐${NC}"
-    (( HAS_NVIDIA )) && \
+    (( HAS_NVIDIA && !CUDA_FOUND )) && \
     echo -e "  ${YELLOW}│${NC}  CUDA not found  →  sudo ldconfig && exec bash               ${YELLOW}│${NC}"
-    (( HAS_AMD_GPU )) && \
+    (( HAS_AMD_GPU )) && ! ( [[ -d /opt/rocm ]] || command -v rocminfo &>/dev/null ) && \
     echo -e "  ${YELLOW}│${NC}  ROCm not found  →  exec bash  (then: hipconfig --version)   ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  Ollama offline  →  ollama-start                             ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  UI won't load   →  ollama-start, wait 5 s, reopen browser   ${YELLOW}│${NC}"
@@ -3872,4 +3909,5 @@ echo -e "  Enjoy your local LLM! — v${SCRIPT_VERSION}"
 echo ""
 
 # ── Sudo keepalive is cleaned up by the EXIT trap set in Step 1 ──────────────
+exit 0
 # (No manual kill needed here — trap fires on normal exit too.)
