@@ -1372,12 +1372,14 @@ echo "[ 2/4 ] Updating Jan.ai…"
 JAN_NEW_TAG=$(curl -fsSL --max-time 8 \
     "https://api.github.com/repos/janhq/jan/releases/latest" \
     2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4 || true)
-JAN_CURRENT=$(jan --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
+JAN_CURRENT=$(Jan --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 \
+              || jan --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
 if [[ -n "$JAN_NEW_TAG" && -n "$JAN_CURRENT" ]]; then
     JAN_NEW_VER="${JAN_NEW_TAG#v}"
     if [[ "$JAN_NEW_VER" != "$JAN_CURRENT" ]]; then
         echo "  Jan.ai: $JAN_CURRENT → $JAN_NEW_VER — downloading…"
-        JAN_DEB="jan-linux-amd64-${JAN_NEW_VER}.deb"
+        # Jan.ai asset naming: Jan_VERSION_amd64.deb (capital J, underscores)
+        JAN_DEB="Jan_${JAN_NEW_VER}_amd64.deb"
         JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_NEW_TAG}/${JAN_DEB}"
         _TMP=$(mktemp /tmp/jan-XXXXX.deb)
         curl -fsSL --progress-bar -o "$_TMP" "$JAN_URL" \
@@ -1387,7 +1389,7 @@ if [[ -n "$JAN_NEW_TAG" && -n "$JAN_CURRENT" ]]; then
     else
         echo "  ✔ Jan.ai already at $JAN_CURRENT"
     fi
-elif ! command -v jan &>/dev/null; then
+elif ! command -v Jan &>/dev/null && ! command -v jan &>/dev/null; then
     echo "  Jan.ai not installed — run setup script to install."
 else
     echo "  ✔ Jan.ai present (version check skipped — no internet?)"
@@ -2579,7 +2581,9 @@ _install_jan() {
         return 1
     fi
     JAN_VER="${JAN_TAG#v}"
-    JAN_DEB="jan-linux-amd64-${JAN_VER}.deb"
+    # Jan.ai asset naming changed: new format is Jan_VERSION_amd64.deb
+    # (was jan-linux-amd64-VERSION.deb in older releases)
+    JAN_DEB="Jan_${JAN_VER}_amd64.deb"
     JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_TAG}/${JAN_DEB}"
     info "Downloading Jan.ai ${JAN_TAG}…"
     if curl -fsSL --progress-bar -o "$TEMP_DIR/$JAN_DEB" "$JAN_URL"; then
@@ -2596,8 +2600,13 @@ _install_jan() {
 }
 
 JAN_INSTALLED=0
-if command -v jan &>/dev/null || [[ -f /opt/jan/jan ]] || [[ -f /usr/bin/jan ]]; then
-    _jan_ver=$(jan --version 2>/dev/null | head -1 || echo "installed")
+# Jan.ai binary may be 'Jan' (capital) or 'jan' depending on the release.
+if command -v Jan &>/dev/null || command -v jan &>/dev/null \
+    || [[ -f /usr/bin/Jan ]] || [[ -f /usr/bin/jan ]] \
+    || [[ -f /opt/jan/jan ]]; then
+    _jan_ver=$(Jan --version 2>/dev/null | head -1 \
+               || jan --version 2>/dev/null | head -1 \
+               || echo "installed")
     info "Jan.ai already installed: $_jan_ver"
     JAN_INSTALLED=1
 else
@@ -2606,10 +2615,12 @@ fi
 
 # ── Find the installed Jan binary for the summary ─────────────────────────────
 JAN_BIN_PATH=""
-for _jp in /opt/jan/jan /usr/bin/jan /usr/local/bin/jan "$HOME/.local/bin/jan"; do
+for _jp in /usr/bin/Jan /usr/bin/jan /usr/local/bin/Jan /usr/local/bin/jan \
+            /opt/jan/jan "$HOME/.local/bin/Jan" "$HOME/.local/bin/jan"; do
     [[ -x "$_jp" ]] && { JAN_BIN_PATH="$_jp"; break; }
 done
-[[ -z "$JAN_BIN_PATH" ]] && JAN_BIN_PATH=$(command -v jan 2>/dev/null || true)
+[[ -z "$JAN_BIN_PATH" ]] && JAN_BIN_PATH=$(command -v Jan 2>/dev/null \
+                                            || command -v jan 2>/dev/null || true)
 
 # ── Ensure Jan connects to Ollama ─────────────────────────────────────────────
 # Jan stores app data in ~/jan/ (not ~/.jan/).
@@ -2643,10 +2654,13 @@ cat > "$BIN_DIR/llm-web" <<'JAN_LAUNCHER'
 BIN_DIR_="$HOME/.local/bin"
 
 _find_jan() {
-    for _p in /opt/jan/jan /usr/bin/jan /usr/local/bin/jan \
-               "$HOME/.local/bin/jan" "$HOME/Applications/Jan/jan"; do
+    # Jan.ai binary may be 'Jan' (capital) or 'jan' depending on the release.
+    for _p in /usr/bin/Jan /usr/bin/jan /usr/local/bin/Jan /usr/local/bin/jan \
+               /opt/jan/jan "$HOME/.local/bin/Jan" "$HOME/.local/bin/jan" \
+               "$HOME/Applications/Jan/Jan" "$HOME/Applications/Jan/jan"; do
         [[ -x "$_p" ]] && echo "$_p" && return 0
     done
+    command -v Jan 2>/dev/null && return 0
     command -v jan 2>/dev/null && return 0
     return 1
 }
