@@ -11,8 +11,8 @@ set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
 SCRIPT_VERSION="2.8.0"
-# Set this to your hosted URL to enable auto-update checks on each run:
-SCRIPT_UPDATE_URL=""
+
+SCRIPT_UPDATE_URL="https://github.com/mettbrot0815/llm-auto-setup/blob/main/llm-auto-setup.sh"
 # Local install path — script saves itself here after a successful install:
 SCRIPT_INSTALL_PATH="$HOME/.config/local-llm/llm-auto-setup.sh"
 
