@@ -1458,8 +1458,8 @@ if ask_yes_no "Download ${M[name]} (~${M[size_gb]} GB) now?"; then
         info "Download complete: $(du -h "${M[file]}" | cut -f1)"
 
         # ── Register GGUF with Ollama ─────────────────────────────────────────
-        # Register GGUF with Ollama so it appears in Jan.ai and Neural Terminal.
-        # Without this, Jan.ai's Ollama integration won't see directly downloaded GGUFs.
+        # Register GGUF with Ollama so it appears in Open WebUI and Neural Terminal.
+        # Without this, directly downloaded GGUFs won't show up in the Ollama model list.
         if command -v ollama &>/dev/null; then
             # Derive a clean Ollama model tag from the filename.
             # Ollama requires lowercase tags. We separate the quant suffix with ':'
@@ -1468,7 +1468,7 @@ if ask_yes_no "Download ${M[name]} (~${M[size_gb]} GB) now?"; then
             OLLAMA_TAG=$(basename "${M[file]}" .gguf                 | sed -E 's/-([Qq][0-9].*)$/:\1/'                 | tr '[:upper:]' '[:lower:]')
 
             info "Registering model with Ollama as: $OLLAMA_TAG"
-            info "  This lets Jan.ai, Neural Terminal, and 'ollama run' use it."
+            info "  This lets Open WebUI, Neural Terminal, and 'ollama run' use it."
 
             MODELFILE_PATH="$TEMP_DIR/Modelfile.$$"
             mkdir -p "$TEMP_DIR"
@@ -1486,11 +1486,11 @@ MODELFILE
 
             if ollama create "$OLLAMA_TAG" -f "$MODELFILE_PATH"; then
                 info "✔ Model registered: $OLLAMA_TAG"
-                info "  Now available in Jan.ai and llm-chat. Run: ollama run $OLLAMA_TAG"
+                info "  Now available in Open WebUI and llm-chat. Run: ollama run $OLLAMA_TAG"
                 # Save tag to config so other tools can reference it
                 echo "OLLAMA_TAG=\"$OLLAMA_TAG\"" >> "$MODEL_CONFIG"
             else
-                warn "ollama create failed — model won't appear in Jan.ai or Neural Terminal."
+                warn "ollama create failed — model won't appear in Open WebUI or Neural Terminal."
                 warn "  To register manually:"
                 warn "    ollama create $OLLAMA_TAG -f $MODELFILE_PATH"
             fi
@@ -1750,7 +1750,7 @@ chmod +x "$BIN_DIR/llm-doctor"
 # ── llm-stop ──────────────────────────────────────────────────────────────────
 cat > "$BIN_DIR/llm-stop" <<'STOP_EOF'
 #!/usr/bin/env bash
-# llm-stop — stop Ollama, Jan.ai, and Open WebUI if running
+# llm-stop — stop Ollama and Open WebUI if running
 _is_wsl2() { grep -qi microsoft /proc/version 2>/dev/null; }
 
 echo "Stopping local LLM services…"
@@ -1766,18 +1766,11 @@ else
     sudo systemctl stop ollama && echo "✔ Ollama service stopped." || echo "Could not stop Ollama service."
 fi
 
-# ── Jan.ai ────────────────────────────────────────────────────────────────────
-# Match on the jan binary path (/opt/jan/jan or /usr/bin/jan) to avoid
-# killing unrelated processes that happen to contain "jan" in their argv.
-if pgrep -f "[/]jan$\|[/]jan " >/dev/null 2>&1; then
-    pkill -f "[/]jan$\|[/]jan " 2>/dev/null && echo "✔ Jan.ai stopped." || true
-else
-    echo "  Jan.ai: not running."
-fi
-
 # ── Open WebUI ────────────────────────────────────────────────────────────────
 if pgrep -f "open-webui" >/dev/null 2>&1; then
     pkill -f "open-webui" 2>/dev/null && echo "✔ Open WebUI stopped." || true
+else
+    echo "  Open WebUI: not running."
 fi
 STOP_EOF
 chmod +x "$BIN_DIR/llm-stop"
@@ -1785,7 +1778,7 @@ chmod +x "$BIN_DIR/llm-stop"
 # ── llm-update ────────────────────────────────────────────────────────────────
 cat > "$BIN_DIR/llm-update" <<'UPDATE_EOF'
 #!/usr/bin/env bash
-# llm-update — upgrade Ollama, Jan.ai, Open WebUI (if installed), and pull latest model
+# llm-update — upgrade Ollama, Open WebUI, and pull latest model
 set -uo pipefail
 
 CONFIG="$HOME/.config/local-llm/selected_model.conf"
@@ -1795,38 +1788,11 @@ echo ""
 echo "═══════════════  LLM Stack Updater  ═══════════════"
 echo ""
 
-echo "[ 1/4 ] Updating Ollama…"
+echo "[ 1/3 ] Updating Ollama…"
 curl -fsSL https://ollama.com/install.sh | sh     && echo "  ✔ Ollama: $(ollama --version 2>/dev/null || echo ok)"     || echo "  ✘ Ollama update failed."
 
 echo ""
-echo "[ 2/4 ] Updating Jan.ai…"
-# Jan self-updates via the app; here we check for a newer .deb and install if available
-JAN_NEW_TAG=$(curl -fsSL --max-time 8 \
-    "https://api.github.com/repos/janhq/jan/releases/latest" \
-    2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4 || true)
-JAN_CURRENT=$(jan --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
-if [[ -n "$JAN_NEW_TAG" && -n "$JAN_CURRENT" ]]; then
-    JAN_NEW_VER="${JAN_NEW_TAG#v}"
-    if [[ "$JAN_NEW_VER" != "$JAN_CURRENT" ]]; then
-        echo "  Jan.ai: $JAN_CURRENT → $JAN_NEW_VER — downloading…"
-        JAN_DEB="Jan_${JAN_NEW_VER}_amd64.deb"
-        JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_NEW_TAG}/${JAN_DEB}"
-        _TMP=$(mktemp /tmp/jan-XXXXX.deb)
-        curl -fsSL --progress-bar -o "$_TMP" "$JAN_URL" \
-            && sudo dpkg -i "$_TMP" && echo "  ✔ Jan.ai updated to $JAN_NEW_VER" \
-            || echo "  ✘ Jan.ai update failed — visit https://jan.ai/download"
-        rm -f "$_TMP"
-    else
-        echo "  ✔ Jan.ai already at $JAN_CURRENT"
-    fi
-elif ! command -v jan &>/dev/null; then
-    echo "  Jan.ai not installed — run setup script to install."
-else
-    echo "  ✔ Jan.ai present (version check skipped — no internet?)"
-fi
-
-echo ""
-echo "[ 3/4 ] Updating Open WebUI (if installed)…"
+echo "[ 2/3 ] Updating Open WebUI…"
 if [[ -d "$OWUI_VENV" ]]; then
     OLD_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "?")
     "$OWUI_VENV/bin/pip" install --upgrade open-webui --quiet \
@@ -1834,11 +1800,11 @@ if [[ -d "$OWUI_VENV" ]]; then
         && echo "  ✔ Open WebUI: $OLD_VER → $NEW_VER" \
         || echo "  ✘ Open WebUI update failed."
 else
-    echo "  Open WebUI not installed (optional tool, install via optional tools step)."
+    echo "  Open WebUI not installed — run setup script to install."
 fi
 
 echo ""
-echo "[ 4/4 ] Pulling latest model tag…"
+echo "[ 3/3 ] Pulling latest model tag…"
 OLLAMA_TAG=""
 [[ -f "$CONFIG" ]] && OLLAMA_TAG=$(grep "^OLLAMA_TAG=" "$CONFIG" | head -1 | cut -d'"' -f2)
 if [[ -n "$OLLAMA_TAG" ]]; then
@@ -2980,130 +2946,44 @@ chmod +x "$BIN_DIR/llm-chat"
 info "Web UI: llm-chat  →  serves on http://localhost:8090"
 
 # =============================================================================
-# JAN.AI — Primary Desktop UI (Electron app)
+# OPEN WEBUI — Primary Web UI
 # =============================================================================
-step "Jan.ai (primary Web/Desktop UI)"
+step "Open WebUI (primary browser UI)"
 
-# ── Electron / X11 runtime dependencies ──────────────────────────────────────
-# Jan is an Electron app — these libs must be present for the binary to launch.
-# They are safe to install on any Ubuntu 22.04/24.04 system; most are already
-# present. We install them unconditionally so Jan works on the first launch.
-info "Installing Jan.ai runtime dependencies (Electron / X11 / GTK)…"
-JAN_DEPS=(
-    libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
-    libatspi2.0-0 libsecret-1-0 libx11-xcb1 libxcb-dri3-0
-    libgbm1 libxshmfence1 libdrm2
-)
-# libasound2 is a virtual package on Ubuntu 24.04 (provided by libasound2t64).
-# Install the real package for the detected distro version; fall back silently.
-if apt-cache show libasound2t64 &>/dev/null 2>&1; then
-    JAN_DEPS+=(libasound2t64)   # Ubuntu 24.04+
+OWUI_VENV="$HOME/.local/share/open-webui-venv"
+OWUI_INSTALLED=0
+
+info "Installing Open WebUI (browser-based chat UI for Ollama, ~500 MB)…"
+[[ ! -d "$OWUI_VENV" ]] && "${PYTHON_BIN:-python3}" -m venv "$OWUI_VENV"
+"$OWUI_VENV/bin/pip" install --upgrade pip --quiet || true
+if "$OWUI_VENV/bin/pip" install open-webui; then
+    OWUI_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null \
+        | awk '/^Version:/{print $2}' || echo "unknown")
+    info "Open WebUI $OWUI_VER installed."
+    OWUI_INSTALLED=1
 else
-    JAN_DEPS+=(libasound2)      # Ubuntu 22.04 and older
-fi
-sudo apt-get install -y "${JAN_DEPS[@]}" 2>/dev/null \
-    || warn "Some Jan runtime deps failed — Jan may not launch."
-
-# ── WSL2: configure DISPLAY for X forwarding ─────────────────────────────────
-# Windows 11 WSLg sets $DISPLAY automatically; Windows 10 needs VcXsrv.
-# We write a sensible default so Jan launches after 'exec bash'.
-if is_wsl2; then
-    if ! grep -q "# WSL2-DISPLAY" "$HOME/.bashrc" 2>/dev/null; then
-        {   echo ""
-            echo "# WSL2-DISPLAY — X forwarding for Jan.ai and other GUI apps"
-            echo "# Windows 11 WSLg: DISPLAY is set by the kernel automatically."
-            echo "# Windows 10: install VcXsrv, run it with 'Disable access control',"
-            echo "# then DISPLAY=:0.0 connects to it."
-            echo 'if [[ -z "${DISPLAY:-}" ]]; then export DISPLAY=:0.0; fi'
-        } >> "$HOME/.bashrc"
-        info "WSL2: DISPLAY fallback written to ~/.bashrc."
-        info "  Windows 11 WSLg → Jan.ai works out-of-the-box after 'exec bash'."
-        info "  Windows 10     → Install VcXsrv from https://sourceforge.net/projects/vcxsrv/"
-    fi
+    warn "Open WebUI pip install failed — check output above."
 fi
 
-_install_jan() {
-    info "Detecting latest Jan.ai release…"
-    JAN_TAG=$(curl -fsSL --max-time 8 \
-        "https://api.github.com/repos/janhq/jan/releases/latest" \
-        2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4 || true)
-    if [[ -z "$JAN_TAG" ]]; then
-        warn "Could not fetch Jan.ai release tag from GitHub."
-        warn "  Manual install: https://jan.ai/download  (Linux .deb)"
-        return 1
-    fi
-    JAN_VER="${JAN_TAG#v}"
-    JAN_DEB="Jan_${JAN_VER}_amd64.deb"
-    JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_TAG}/${JAN_DEB}"
-    info "Downloading Jan.ai ${JAN_TAG}…"
-    if curl -fsSL --progress-bar -o "$TEMP_DIR/$JAN_DEB" "$JAN_URL"; then
-        sudo dpkg -i "$TEMP_DIR/$JAN_DEB" 2>/dev/null \
-            || { sudo apt-get install -f -y 2>/dev/null && sudo dpkg -i "$TEMP_DIR/$JAN_DEB"; } \
-            || { warn "Jan.ai dpkg install failed."; return 1; }
-        rm -f "$TEMP_DIR/$JAN_DEB"
-        info "Jan.ai ${JAN_TAG} installed."
-        return 0
-    else
-        warn "Jan.ai download failed.  Manual install: https://jan.ai/download"
-        return 1
-    fi
-}
+# ── Write llm-web launcher ────────────────────────────────────────────────────
+# llm-web / webui — starts Ollama if needed, then serves Open WebUI on :8080.
+# On WSL2 the server binds to 0.0.0.0 so the Windows browser can reach it.
+if is_wsl2; then OWUI_HOST="0.0.0.0"; else OWUI_HOST="127.0.0.1"; fi
 
-JAN_INSTALLED=0
-if command -v jan &>/dev/null || [[ -f /opt/jan/jan ]] || [[ -f /usr/bin/jan ]]; then
-    _jan_ver=$(jan --version 2>/dev/null | head -1 || echo "installed")
-    info "Jan.ai already installed: $_jan_ver"
-    JAN_INSTALLED=1
-else
-    _install_jan && JAN_INSTALLED=1
-fi
-
-# ── Find the installed Jan binary for the summary ─────────────────────────────
-JAN_BIN_PATH=""
-for _jp in /opt/jan/jan /usr/bin/jan /usr/local/bin/jan "$HOME/.local/bin/jan"; do
-    [[ -x "$_jp" ]] && { JAN_BIN_PATH="$_jp"; break; }
-done
-[[ -z "$JAN_BIN_PATH" ]] && JAN_BIN_PATH=$(command -v jan 2>/dev/null || true)
-
-# ── Ensure Jan connects to Ollama ─────────────────────────────────────────────
-# Jan stores app data in ~/jan/ (not ~/.jan/).
-# We pre-write the OpenAI-extension config so Ollama shows up in Jan's
-# model dropdown without the user needing to configure it manually.
-JAN_CFG_DIR="$HOME/jan"
-JAN_EXT_CFG="$JAN_CFG_DIR/extensions/@janhq/inference-openai-extension/settings.json"
-if (( JAN_INSTALLED )); then
-    mkdir -p "$(dirname "$JAN_EXT_CFG")"
-    if [[ ! -f "$JAN_EXT_CFG" ]]; then
-        cat > "$JAN_EXT_CFG" <<'JANCFG'
-{
-  "full_url": "http://127.0.0.1:11434/v1/chat/completions",
-  "api_key": "ollama"
-}
-JANCFG
-        info "Jan.ai → Ollama connection configured."
-    else
-        info "Jan.ai extension config already exists — skipping."
-    fi
-fi
-
-# ── Write webui launcher (jan) ────────────────────────────────────────────────
-# Finds the jan binary in common install locations and launches it.
-# On WSL2 without X, prints a helpful message and falls back to llm-chat.
-cat > "$BIN_DIR/llm-web" <<'JAN_LAUNCHER'
+cat > "$BIN_DIR/llm-web" <<OWUI_LAUNCHER
 #!/usr/bin/env bash
-# llm-web / webui — launch Jan.ai desktop UI
-# Falls back to Neural Terminal browser UI on WSL2 without X server.
+# llm-web / webui — Open WebUI browser interface backed by Ollama
+# Open http://localhost:8080 in your browser after running this.
 
-BIN_DIR_="$HOME/.local/bin"
-
-_find_jan() {
-    for _p in /opt/jan/jan /usr/bin/jan /usr/local/bin/jan \
-               "$HOME/.local/bin/jan" "$HOME/Applications/Jan/jan"; do
-        [[ -x "$_p" ]] && echo "$_p" && return 0
-    done
-    command -v jan 2>/dev/null && return 0
-    return 1
-}
+export DATA_DIR="$GUI_DIR/open-webui-data"
+mkdir -p "\$DATA_DIR"
+export OLLAMA_BASE_URL="http://127.0.0.1:11434"
+export ENABLE_OPENAI_API=false
+export OPENAI_API_BASE_URL="http://127.0.0.1:11434/v1"
+export OPENAI_API_KEY="ollama"
+export PYTHONWARNINGS="ignore::RuntimeWarning"
+export USER_AGENT="open-webui/local"
+export CORS_ALLOW_ORIGIN="http://localhost:8080"
 
 _ollama_running() {
     if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -3113,43 +2993,30 @@ _ollama_running() {
     fi
 }
 
-# Start Ollama if needed
 if ! _ollama_running; then
     echo "→ Starting Ollama…"
     command -v ollama-start &>/dev/null && ollama-start \
         || nohup ollama serve >/dev/null 2>&1 &
-    sleep 2
+    for i in {1..15}; do
+        curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 1
+    done
 fi
 
-# WSL2 without display → fall back to Neural Terminal
-if grep -qi microsoft /proc/version 2>/dev/null; then
-    if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        echo ""
-        echo "  WSL2: no X display detected — launching Neural Terminal instead."
-        echo "  (Install VcXsrv or use Windows 11 WSLg to run Jan.ai in WSL2)"
-        echo ""
-        exec "$BIN_DIR_/llm-chat"
-    fi
-fi
+# Kill any process already holding port 8080
+OLD=\$(lsof -ti tcp:8080 2>/dev/null || true)
+[[ -n "\$OLD" ]] && kill "\$OLD" 2>/dev/null && sleep 1
 
-JAN_BIN=$(_find_jan)
-if [[ -z "$JAN_BIN" ]]; then
-    echo "Jan.ai not found. To install:"
-    echo "  https://jan.ai/download  (Linux .deb)"
-    echo "Or fall back to browser UI:  llm-chat"
-    exit 1
-fi
-
-echo "→ Launching Jan.ai…"
-exec "$JAN_BIN" "$@"
-JAN_LAUNCHER
+echo "→ Open WebUI starting on http://localhost:8080"
+echo "  Press Ctrl+C to stop."
+"$OWUI_VENV/bin/open-webui" serve --host $OWUI_HOST --port 8080
+OWUI_LAUNCHER
 chmod +x "$BIN_DIR/llm-web"
 
-if (( JAN_INSTALLED )); then
-    info "Jan.ai ready → run: webui"
-    is_wsl2 && info "  WSL2: Jan needs an X server — run llm-chat for the browser fallback."
+if (( OWUI_INSTALLED )); then
+    info "Open WebUI ready → run: webui  (http://localhost:8080)"
 else
-    info "Jan.ai not installed — run: webui  (falls back to Neural Terminal in WSL2)"
+    info "Open WebUI not installed — re-run setup or install manually:"
+    info "  pip install open-webui"
 fi
 
 # =============================================================================
@@ -3177,14 +3044,13 @@ else
     printf "    ${GREEN}%-4s${NC} %-20s %s\n" "4" "GUI tools" "(no display — will skip)"
 fi
 printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "5" "neofetch" "system info banner + fastfetch"
-printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "6" "Open WebUI" "browser chat UI alternative to Jan.ai (~500 MB pip install)"
 echo ""
 if [[ -t 0 ]]; then
     read -r -p "  > " _tool_sel
 else
     _tool_sel=""
 fi
-[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6"
+[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5"
 
 # ── 1: tmux ───────────────────────────────────────────────────────────────────
 if [[ "${_tool_sel:-}" == *"1"* ]]; then
@@ -3276,61 +3142,7 @@ if [[ "${_tool_sel:-}" == *"5"* ]]; then
     info "neofetch + fastfetch installed."
 fi
 
-# ── 6: Open WebUI ─────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"6"* ]]; then
-    OWUI_VENV="$HOME/.local/share/open-webui-venv"
-    info "Installing Open WebUI (browser-based full-stack chat UI, ~500 MB)…"
-    [[ ! -d "$OWUI_VENV" ]] && "${PYTHON_BIN:-python3}" -m venv "$OWUI_VENV"
-    "$OWUI_VENV/bin/pip" install --upgrade pip --quiet || true
-    "$OWUI_VENV/bin/pip" install open-webui \
-        || { warn "Open WebUI pip install failed — check output above."; }
-    OWUI_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "unknown")
-    info "Open WebUI $OWUI_VER installed."
-
-    if is_wsl2; then OWUI_HOST="0.0.0.0"; else OWUI_HOST="127.0.0.1"; fi
-
-    cat > "$BIN_DIR/llm-webui-alt" <<OWUI_ALT_LAUNCHER
-#!/usr/bin/env bash
-# llm-webui-alt — Open WebUI browser interface (alternative to Jan.ai)
-export DATA_DIR="$GUI_DIR/open-webui-data"
-mkdir -p "\$DATA_DIR"
-export OLLAMA_BASE_URL="http://127.0.0.1:11434"
-export ENABLE_OPENAI_API=false
-export OPENAI_API_BASE_URL="http://127.0.0.1:11434/v1"
-export OPENAI_API_KEY="ollama"
-export PYTHONWARNINGS="ignore::RuntimeWarning"
-export USER_AGENT="open-webui/local"
-export CORS_ALLOW_ORIGIN="http://localhost:8080"
-_ollama_running() {
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        pgrep -f "ollama serve" >/dev/null 2>&1
-    else
-        systemctl is-active --quiet ollama 2>/dev/null
-    fi
-}
-if ! _ollama_running; then
-    echo "→ Starting Ollama…"
-    command -v ollama-start &>/dev/null && ollama-start \
-        || nohup ollama serve >/dev/null 2>&1 &
-    for i in {1..15}; do
-        curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 1
-    done
-fi
-OLD=\$(lsof -ti tcp:8080 2>/dev/null || true)
-[[ -n "\$OLD" ]] && kill "\$OLD" 2>/dev/null && sleep 1
-echo "→ Open WebUI starting on port 8080…"
-echo "  Open http://localhost:8080 in your browser."
-echo "  Press Ctrl+C to stop."
-"$OWUI_VENV/bin/open-webui" serve --host $OWUI_HOST --port 8080
-OWUI_ALT_LAUNCHER
-    chmod +x "$BIN_DIR/llm-webui-alt"
-    # Expose via alias webui-alt (main webui alias stays Jan.ai)
-    grep -q "llm-webui-alt" "$HOME/.local_llm_aliases" 2>/dev/null \
-        || echo "alias webui-alt='llm-webui-alt'" >> "$HOME/.local_llm_aliases"
-    info "Open WebUI installed → run: webui-alt (http://localhost:8080)"
-fi
-
-[[ -n "${_tool_sel:-}" ]] && info "Optional tools step complete." || info "Optional tools: skipped." 
+[[ -n "${_tool_sel:-}" ]] && info "Optional tools step complete." || info "Optional tools: skipped."
 
 # =============================================================================
 # STEP 13b — AUTONOMOUS COWORKING (Open Interpreter + Aider)
@@ -3511,8 +3323,7 @@ alias gguf-run='run-gguf'
 alias ask='run-model'       # run-model reads config + passes prompt
 alias llm-status='local-models-info'
 alias chat='llm-chat'
-alias webui='llm-web'       # Jan.ai desktop UI (falls back to Neural Terminal on WSL2)
-alias jan='llm-web'         # shorthand for Jan.ai
+alias webui='llm-web'       # Open WebUI browser UI (http://localhost:8080)
 alias ai='aider'
 alias doctor='llm-doctor'   # run diagnostics
 alias llm-setup='bash ~/.config/local-llm/llm-auto-setup.sh'
@@ -3530,8 +3341,8 @@ llm-quick-help() {
     echo ""
     echo -e "  ${C}+-----------------------------------------------------------------+${N}"
     echo -e "  ${C}|${N}  ${M}Chat${N}                                                           ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}webui${N}         Open WebUI        -> http://localhost:8080       ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}chat${N}          Neural Terminal   -> http://localhost:8090       ${C}|${N}"
-    echo -e "  ${C}|${N}   ${Y}jan / webui${N}   Jan.ai desktop UI (falls back to Neural Terminal)  ${C}|${N}"
     echo -e "  ${C}|${N}  ${M}Models${N}                                                         ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}run-model${N}     run default GGUF from CLI                       ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}ollama-run${N}    run any Ollama model  (ollama-run <tag>)         ${C}|${N}"
@@ -3542,8 +3353,8 @@ llm-quick-help() {
     echo -e "  ${C}|${N}   ${Y}ai / aider${N}    AI pair programmer with git integration         ${C}|${N}"
     echo -e "  ${C}|${N}  ${M}System${N}                                                         ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}ollama-start${N}  start Ollama backend                            ${C}|${N}"
-    echo -e "  ${C}|${N}   ${Y}llm-stop${N}      stop Ollama + Jan.ai + UIs                      ${C}|${N}"
-    echo -e "  ${C}|${N}   ${Y}llm-update${N}    upgrade Ollama + Jan.ai, pull latest model      ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}llm-stop${N}      stop Ollama + Open WebUI                        ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}llm-update${N}    upgrade Ollama + Open WebUI, pull latest model  ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-status${N}    show models, disk, config                       ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}doctor${N}        diagnose issues (llm-doctor)                    ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-help${N}      full command reference                          ${C}|${N}"
@@ -3564,8 +3375,8 @@ run-model() {
 llm-help() {
     cat <<'HELP'
 Local LLM commands (v3):
+  webui                  Open WebUI browser UI at http://localhost:8080
   chat                   Open Neural Terminal at http://localhost:8090
-  jan / webui            Jan.ai desktop UI (→ Neural Terminal fallback in WSL2)
   run-model / ask        Run default GGUF model from CLI
   ollama-pull <tag>      Download an Ollama model
   ollama-run  <tag>      Run an Ollama model interactively
@@ -3581,9 +3392,8 @@ Local LLM commands (v3):
   llm-status             Show models, disk, and hardware config
   cowork                 Open Interpreter — AI that runs code + manages files
   ai / aider             AI pair programmer with git integration
-  webui-alt              Open WebUI browser UI at http://localhost:8080
-  llm-stop               Stop Ollama and any running UIs
-  llm-update             Upgrade Ollama + Jan.ai, pull latest model
+  llm-stop               Stop Ollama and Open WebUI
+  llm-update             Upgrade Ollama + Open WebUI, pull latest model
   llm-switch             Change active model (no full reinstall)
   llm-add                Download more models (hardware-filtered picker)
   llm-setup              Re-run setup from local installed copy
@@ -3682,7 +3492,7 @@ if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     PASS=$(( PASS + 1 ))
 else
     warn "✘ Ollama API not reachable on port 11434."
-    warn "  Jan.ai and the Neural Terminal both need this to work."
+    warn "  Open WebUI and the Neural Terminal both need this to work."
     warn "  Fix: ollama-start  (then wait 5 sec and try again)"
     WARN_COUNT=$(( WARN_COUNT + 1 ))
 fi
@@ -3793,12 +3603,11 @@ echo ""
 echo -e "  ${CYAN}┌──────────────────────────  COMMANDS  ───────────────────────────┐${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Chat interfaces ─────────────────────────────────────────${NC}  ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}jan${NC}           Launch Jan.ai desktop UI                        ${CYAN}│${NC}"
-if (( JAN_INSTALLED )); then
-    _jan_display="${JAN_BIN_PATH:-jan (binary in PATH)}"
-    printf "  ${CYAN}│${NC}   ${GREEN}%-10s${NC}  %-49s${CYAN}│${NC}\n" "  ✔ installed" "$_jan_display"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}webui${NC}         Open WebUI → http://localhost:8080              ${CYAN}│${NC}"
+if (( OWUI_INSTALLED )); then
+    printf "  ${CYAN}│${NC}   ${GREEN}%-10s${NC}  %-49s${CYAN}│${NC}\n" "  ✔ installed" "$OWUI_VENV"
 else
-    echo -e "  ${CYAN}│${NC}   ${YELLOW}  ✘ Jan not installed${NC} — run: llm-setup to retry            ${CYAN}│${NC}"
+    echo -e "  ${CYAN}│${NC}   ${YELLOW}  ✘ Open WebUI not installed${NC} — run: llm-setup to retry     ${CYAN}│${NC}"
 fi
 echo -e "  ${CYAN}│${NC}   ${YELLOW}chat${NC}          Neural Terminal → http://localhost:8090         ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
@@ -3830,8 +3639,8 @@ echo -e "  ${CYAN}│${NC}                                                      
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Maintenance ─────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-add${NC}       Download more models (hardware-filtered)        ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-setup${NC}     Re-run setup from local installed copy          ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-stop${NC}      Stop Ollama backend                             ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama + Jan.ai, pull latest model      ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-stop${NC}      Stop Ollama + Open WebUI                        ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama + Open WebUI, pull latest model  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-switch${NC}    Change model (no reinstall needed)              ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Help ─────────────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
@@ -3853,10 +3662,7 @@ echo -e "${GREEN}  ║   Same window. Same directory. Zero friction.            
 echo -e "${GREEN}  ╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}Then:${NC}"
-echo -e "    ${YELLOW}jan${NC}        → Jan.ai desktop UI"
-if is_wsl2; then
-    echo -e "    ${YELLOW}           ${NC}  WSL2: needs X server (WSLg on Win11, or VcXsrv on Win10)"
-fi
+echo -e "    ${YELLOW}webui${NC}      → Open WebUI  http://localhost:8080  (browser)"
 echo -e "    ${YELLOW}chat${NC}       → Neural Terminal  http://localhost:8090  (browser, no X needed)"
 echo -e "    ${YELLOW}run-model${NC}  → quick CLI test"
 echo -e "    ${YELLOW}doctor${NC}     → diagnose issues (llm-doctor)"
