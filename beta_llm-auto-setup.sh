@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v2.8.0
+# Local LLM Auto-Setup — Universal Edition v2.9.0
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04, Debian 12, Linux Mint 21+, Pop!_OS 22.04.
@@ -10,9 +10,9 @@
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="2.8.0"
-
-SCRIPT_UPDATE_URL="https://github.com/mettbrot0815/llm-auto-setup/blob/main/llm-auto-setup.sh"
+SCRIPT_VERSION="2.9.0"
+# Set this to your hosted URL to enable auto-update checks on each run:
+SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
 SCRIPT_INSTALL_PATH="$HOME/.config/local-llm/llm-auto-setup.sh"
 
@@ -560,17 +560,17 @@ VRAM_USED_GB=$(( (GPU_LAYERS * MIB_PER_LAYER) / 1024 ))
 RAM_USED_GB=$(( (CPU_LAYERS  * MIB_PER_LAYER) / 1024 ))
 
 echo ""
-echo -e "  ${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "  ${GREEN}║           RECOMMENDED CONFIGURATION                 ║${NC}"
-echo -e "  ${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "Model"         "${M[name]}"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "Capabilities"  "${M[caps]}"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "Size"          "${M[tier]}  (~${M[size_gb]} GB file)"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "GPU layers"    "${GPU_LAYERS} / ${M[layers]}  (~${VRAM_USED_GB} GB VRAM)"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "CPU layers"    "${CPU_LAYERS}  (~${RAM_USED_GB} GB RAM)"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "Threads"       "${HW_THREADS}"
-printf "  ${GREEN}║${NC}  %-16s %-35s${GREEN}║${NC}\n" "Batch size"    "${BATCH}"
-echo -e "  ${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+echo -e "  ${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${GREEN}║           RECOMMENDED CONFIGURATION                   ║${NC}"
+echo -e "  ${GREEN}╠═══════════════════════════════════════════════════════╣${NC}"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "Model"         "${M[name]}"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "Capabilities"  "${M[caps]}"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "Size"          "${M[tier]}  (~${M[size_gb]} GB file)"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "GPU layers"    "${GPU_LAYERS} / ${M[layers]}  (~${VRAM_USED_GB} GB VRAM)"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "CPU layers"    "${CPU_LAYERS}  (~${RAM_USED_GB} GB RAM)"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "Threads"       "${HW_THREADS}"
+printf "  ${GREEN}║${NC}  %-16s %-36.36s${GREEN}║${NC}\n" "Batch size"    "${BATCH}"
+echo -e "  ${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
 echo ""
 
 if ! ask_yes_no "Proceed with this configuration?"; then
@@ -1305,13 +1305,7 @@ if ask_yes_no "Download ${M[name]} (~${M[size_gb]} GB) now?"; then
             mkdir -p "$TEMP_DIR"
             cat > "$MODELFILE_PATH" <<MODELFILE
 FROM $GGUF_MODELS/${M[file]}
-# 999 = Ollama sentinel: "put as many layers on GPU as VRAM allows"
-# This is always better than a pre-calculated value because Ollama measures
-# actual free VRAM at load time, accounting for driver/CUDA overhead.
-PARAMETER num_gpu 999
 PARAMETER num_thread $HW_THREADS
-# 8192 context — larger than 4096 but still safe for 12 GB VRAM.
-# Flash attention + q8_0 KV cache make this affordable even on 6-8 GB cards.
 PARAMETER num_ctx 8192
 MODELFILE
 
@@ -2774,13 +2768,24 @@ if [[ "${_tool_sel:-}" == *"6"* ]]; then
 # llm-webui-alt — Open WebUI browser interface (alternative to Jan.ai)
 export DATA_DIR="$GUI_DIR/open-webui-data"
 mkdir -p "\$DATA_DIR"
+
+# ── Ollama connection ─────────────────────────────────────────────────
 export OLLAMA_BASE_URL="http://127.0.0.1:11434"
-export ENABLE_OPENAI_API=false
-export OPENAI_API_BASE_URL="http://127.0.0.1:11434/v1"
-export OPENAI_API_KEY="ollama"
+
+# ── Streaming fix: increase timeouts so large model responses complete ─
+# Default aiohttp timeout is 300s — long outputs on slow GPUs can exceed
+# this, causing the UI to hang at 100% GPU with no text appearing.
+export AIOHTTP_CLIENT_TIMEOUT=900
+export AIOHTTP_CLIENT_TIMEOUT_TOTAL=900
+export OLLAMA_REQUEST_TIMEOUT=900
+
+# ── Auth + CORS: open for local-only use ─────────────────────────────
+export WEBUI_AUTH=false
+export ENABLE_SIGNUP=false
+export CORS_ALLOW_ORIGIN="*"
+
 export PYTHONWARNINGS="ignore::RuntimeWarning"
-export USER_AGENT="open-webui/local"
-export CORS_ALLOW_ORIGIN="http://localhost:8080"
+
 _ollama_running() {
     if grep -qi microsoft /proc/version 2>/dev/null; then
         pgrep -f "ollama serve" >/dev/null 2>&1
@@ -2796,10 +2801,14 @@ if ! _ollama_running; then
         curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 1
     done
 fi
-OLD=\$(lsof -ti tcp:8080 2>/dev/null || true)
-[[ -n "\$OLD" ]] && kill "\$OLD" 2>/dev/null && sleep 1
-echo "→ Open WebUI starting on port 8080…"
-echo "  Open http://localhost:8080 in your browser."
+
+# ── Kill any stale server on port 8080 (use ss, fall back to fuser) ──
+_stale=\$(ss -lptn 'sport = :8080' 2>/dev/null | awk 'NR>1{match(\$NF,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1 || true)
+[[ -z "\$_stale" ]] && _stale=\$(fuser 8080/tcp 2>/dev/null || true)
+[[ -n "\$_stale" ]] && kill "\$_stale" 2>/dev/null && sleep 1
+
+echo "→ Open WebUI starting on http://localhost:8080"
+echo "  If output hangs: ensure Ollama is running and the model is pulled."
 echo "  Press Ctrl+C to stop."
 "$OWUI_VENV/bin/open-webui" serve --host $OWUI_HOST --port 8080
 OWUI_ALT_LAUNCHER
@@ -2897,7 +2906,13 @@ echo ""
 export OPENAI_API_KEY="ollama"
 export OPENAI_API_BASE="http://127.0.0.1:11434/v1"
 
-"$OI_VENV/bin/interpreter"     --model "openai/$OLLAMA_TAG"     --context_window 8192     --max_tokens 4096     --api_base "http://127.0.0.1:11434/v1"     --api_key "ollama"     "$@"
+"$OI_VENV/bin/interpreter" \
+    --model "openai/${OLLAMA_TAG}" \
+    --context_window 8192 \
+    --max_tokens 4096 \
+    --api_base "http://127.0.0.1:11434/v1" \
+    --api_key "ollama" \
+    "$@"
 COWORK_EOF
 chmod +x "$BIN_DIR/cowork"
 info "cowork launcher written: $BIN_DIR/cowork"
@@ -2965,9 +2980,15 @@ echo "  ║  Type /help inside aider for commands           ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo ""
 
-export OPENAI_API_KEY="ollama"
+# Aider native Ollama integration via ollama_chat/ provider prefix.
+# OLLAMA_API_BASE points aider at the local server; no key needed.
+export OLLAMA_API_BASE="http://127.0.0.1:11434"
 
-"$AI_VENV/bin/aider"     --model "openai/$OLLAMA_TAG"     --openai-api-base "http://127.0.0.1:11434/v1"     --no-auto-commits     "$@"
+"$AI_VENV/bin/aider" \
+    --model "ollama_chat/${OLLAMA_TAG}" \
+    --no-auto-commits \
+    --no-check-update \
+    "$@"
 AIDER_EOF
 chmod +x "$BIN_DIR/aider"
 info "aider launcher written: $BIN_DIR/aider"
@@ -3157,7 +3178,7 @@ fi
 
 echo -e "  ${C}Commands:${N}  ${Y}llm-add${N}    download a model from this list"
 echo -e "            ${Y}llm-switch${N} change your active model"
-echo -e "            ${Y}llm-update${N} upgrade Ollama + Jan.ai"
+echo -e "            ${Y}llm-update${N} upgrade Ollama + Open WebUI + re-pull model"
 echo ""
 CHECKER_EOF
 chmod +x "$BIN_DIR/llm-checker"
@@ -3346,7 +3367,7 @@ if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     PASS=$(( PASS + 1 ))
 else
     warn "✘ Ollama API not reachable on port 11434."
-    warn "  Jan.ai and the Neural Terminal both need this to work."
+    warn "  Neural Terminal and Open WebUI both need this to work."
     warn "  Fix: ollama-start  (then wait 5 sec and try again)"
     WARN_COUNT=$(( WARN_COUNT + 1 ))
 fi
@@ -3452,7 +3473,7 @@ echo -e "  ${CYAN}┌───────────────────�
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Chat interfaces ─────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}chat${NC}          Neural Terminal → http://localhost:8090         ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}webui${NC}         Open WebUI → http://localhost:8080  (optional)  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}webui${NC}         Open WebUI → http://localhost:8080  (opt. tool 6) ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Run models ──────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}run-model${NC}     Run your default model from the command line    ${CYAN}│${NC}"
@@ -3484,7 +3505,7 @@ echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Maintenance ───────�
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-add${NC}       Download more models (hardware-filtered)        ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-setup${NC}     Re-run setup from local installed copy          ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-stop${NC}      Stop Ollama backend                             ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama + Open WebUI, pull latest model  ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama + WebUI + re-pull active model    ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-switch${NC}    Change model (no reinstall needed)              ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Help ─────────────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
@@ -3507,8 +3528,10 @@ echo -e "${GREEN}  ╚═══════════════════�
 echo ""
 echo -e "  ${CYAN}Then:${NC}"
 echo -e "    ${YELLOW}chat${NC}       → Neural Terminal  http://localhost:8090"
-echo -e "    ${YELLOW}run-model${NC}  → quick CLI chat from terminal"
-echo -e "    ${YELLOW}llm-help${NC}   → all commands"
+echo -e "    ${YELLOW}cowork${NC}     → autonomous coding AI (runs code, edits files)"
+echo -e "    ${YELLOW}ai${NC}         → aider AI pair programmer (git-integrated)"
+echo -e "    ${YELLOW}run-model${NC}  → quick CLI inference from terminal"
+echo -e "    ${YELLOW}llm-help${NC}   → full command reference"
 is_wsl2 && { echo ""; echo -e "  ${YELLOW}  WSL2:${NC} run ${YELLOW}ollama-start${NC} before using any UI"; }
 echo ""
 
@@ -3521,6 +3544,8 @@ if (( WARN_COUNT > 0 )); then
     echo -e "  ${YELLOW}│${NC}  ROCm not found  →  exec bash  (then: hipconfig --version)   ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  Ollama offline  →  ollama-start                             ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  UI won't load   →  ollama-start, wait 5 s, reopen browser   ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}  WebUI no output →  model may need more time; check Ollama    ${YELLOW}│${NC}"
+    echo -e "  ${YELLOW}│${NC}                      logs: sudo journalctl -u ollama -n 30    ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  llama-cpp err   →  exec bash && run-model hello              ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}│${NC}  cowork crash    →  re-run setup (setuptools will reinstall)  ${YELLOW}│${NC}"
     echo -e "  ${YELLOW}└──────────────────────────────────────────────────────────────┘${NC}"
