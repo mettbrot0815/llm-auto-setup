@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v2.5.0
+# Local LLM Auto-Setup — Universal Edition v2.6.0
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04 — CPU-only through high-end GPU.
@@ -9,7 +9,7 @@
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="2.5.0"
+SCRIPT_VERSION="2.6.0"
 # Set this to your hosted URL to enable auto-update checks on each run:
 SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
@@ -257,8 +257,8 @@ echo ""
 
 # =============================================================================
 # STEP 3 — MODEL SELECTION ENGINE
-# All public models (bartowski). Tiers: 24GB→32B, 16GB→30B-MoE, 12GB→14B,
-# 10GB→Nemo-12B, 8GB→8B-Q6, 6GB→8B-Q4, 4GB→4B, 2GB→Phi-mini, CPU→auto.
+# All public models (bartowski). Catalog: 2026-02. Tiers: 24GB→32B, 16GB→MoE,
+# 12-10GB→Phi-4/Qwen3-14B, 8GB→8B-Q6, 6GB→8B-Q4, 4GB→4B, CPU→Phi-4-mini.
 # =============================================================================
 
 step "Auto-selecting model"
@@ -293,7 +293,8 @@ gpu_layers_for() {
 }
 
 # ── Model definitions ─────────────────────────────────────────────────────────
-# [TOOLS]=function calling  [THINK]=reasoning via /think  [UNCENS]=uncensored  ★=best pick
+# Rankings updated Feb 2026 from whatllm.org, localllm.in, ArtificialAnalysis
+# [TOOLS]=function calling  [THINK]=chain-of-thought via /think  [UNCENS]=uncensored  ★=best pick
 
 declare -A M   # holds the chosen model's fields
 
@@ -302,40 +303,50 @@ select_model() {
     local ram=$TOTAL_RAM_GB
 
     # ── ≥ 24 GB VRAM ─────────────────────────────────────────────────────────
+    # Qwen3-32B: #1 open-weight GGUF at this tier (Feb 2026).
+    # Fully on GPU at 24 GB; 128K context; best TOOLS+THINK combo.
     if (( HAS_GPU && vram >= 24 )); then
-        highlight "High-end GPU (${vram} GB VRAM) → Qwen3-32B [TOOLS+THINK] ★"
+        highlight "≥24 GB VRAM → Qwen3-32B Q4_K_M [TOOLS+THINK] ★"
         M[name]="Qwen3-32B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-32B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
         M[size_gb]=19; M[layers]=64; M[tier]="32B"; return
 
     # ── ≥ 16 GB VRAM ─────────────────────────────────────────────────────────
+    # Mistral-Small-3.2-24B: March 2025 update, 128K context, vision-ready,
+    # Apache 2.0. 14GB file fits comfortably in 16 GB VRAM at ~40 t/s.
+    # Benchmarks: beats Qwen3-30B-A3B on instruction following; A3B faster.
+    # Tip: pick A3B (#19 in manual picker) if you prioritise raw speed.
     elif (( HAS_GPU && vram >= 16 )); then
-        highlight "16 GB VRAM → Qwen3-30B-A3B MoE [TOOLS+THINK] ★"
-        M[name]="Qwen3-30B-A3B Q4_K_M (MoE)"; M[caps]="TOOLS + THINK"
-        M[file]="Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
-        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
-        M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B (MoE)"; return
+        highlight "≥16 GB VRAM → Mistral-Small-3.2-24B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Mistral-Small-3.2-24B Q4_K_M"; M[caps]="TOOLS + THINK"
+        M[file]="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+        M[size_gb]=14; M[layers]=40; M[tier]="24B"; return
 
     # ── ≥ 12 GB VRAM ─────────────────────────────────────────────────────────
+    # Qwen3-14B: best overall 12 GB VRAM choice. TOOLS + THINK native.
     elif (( HAS_GPU && vram >= 12 )); then
-        highlight "12 GB VRAM → Qwen3-14B [TOOLS+THINK] ★"
+        highlight "≥12 GB VRAM → Qwen3-14B Q4_K_M [TOOLS+THINK] ★"
         M[name]="Qwen3-14B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
         M[size_gb]=9; M[layers]=40; M[tier]="14B"; return
 
     # ── ≥ 10 GB VRAM ─────────────────────────────────────────────────────────
+    # Phi-4-14B: replaces Mistral-Nemo here. Strong coding + math benchmark
+    # leader at 14B (Microsoft, Dec 2024). ~8.5 GB VRAM at Q4_K_M.
     elif (( HAS_GPU && vram >= 10 )); then
-        highlight "10 GB VRAM → Mistral-Nemo-12B [TOOLS]"
-        M[name]="Mistral-Nemo-12B Q5_K_M"; M[caps]="TOOLS"
-        M[file]="Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
-        M[url]="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
-        M[size_gb]=8; M[layers]=40; M[tier]="12B"; return
+        highlight "≥10 GB VRAM → Phi-4-14B Q4_K_M [TOOLS] ★"
+        M[name]="Phi-4-14B Q4_K_M"; M[caps]="TOOLS + THINK"
+        M[file]="phi-4-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
+        M[size_gb]=9; M[layers]=40; M[tier]="14B"; return
 
     # ── ≥ 8 GB VRAM ──────────────────────────────────────────────────────────
+    # Qwen3-8B Q6_K: near Q8 quality, still fits in 8 GB. Top 8B choice Feb 2026.
     elif (( HAS_GPU && vram >= 8 )); then
-        highlight "8 GB VRAM → Qwen3-8B Q6 [TOOLS+THINK] ★"
+        highlight "≥8 GB VRAM → Qwen3-8B Q6_K [TOOLS+THINK] ★"
         M[name]="Qwen3-8B Q6_K"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-8B-Q6_K.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
@@ -343,7 +354,7 @@ select_model() {
 
     # ── ≥ 6 GB VRAM ──────────────────────────────────────────────────────────
     elif (( HAS_GPU && vram >= 6 )); then
-        highlight "6 GB VRAM → Qwen3-8B Q4 [TOOLS+THINK] ★"
+        highlight "≥6 GB VRAM → Qwen3-8B Q4_K_M [TOOLS+THINK] ★"
         M[name]="Qwen3-8B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
@@ -351,7 +362,7 @@ select_model() {
 
     # ── ≥ 4 GB VRAM ──────────────────────────────────────────────────────────
     elif (( HAS_GPU && vram >= 4 )); then
-        highlight "4 GB VRAM → Qwen3-4B Q4 [TOOLS+THINK]"
+        highlight "≥4 GB VRAM → Qwen3-4B Q4_K_M [TOOLS+THINK]"
         M[name]="Qwen3-4B Q4_K_M"; M[caps]="TOOLS + THINK"
         M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
         M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
@@ -359,32 +370,32 @@ select_model() {
 
     # ── ≥ 2 GB VRAM (partial offload) ────────────────────────────────────────
     elif (( HAS_GPU && vram >= 2 )); then
-        highlight "Small GPU (${vram} GB) → Phi-3.5-mini partial offload"
-        M[name]="Phi-3.5-mini-instruct Q4_K_M"; M[caps]="none"
-        M[file]="Phi-3.5-mini-instruct-Q4_K_M.gguf"
-        M[url]="https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
-        M[size_gb]=2; M[layers]=32; M[tier]="3.8B"; return
+        highlight "Small GPU (${vram} GB) → Qwen3-1.7B Q8_0 partial offload"
+        M[name]="Qwen3-1.7B Q8_0"; M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
+        M[size_gb]=2; M[layers]=28; M[tier]="1.7B"; return
 
     # ── CPU-only ──────────────────────────────────────────────────────────────
     else
         if (( ram >= 16 )); then
-            highlight "CPU-only (${ram} GB RAM) → Qwen3-8B Q4 [TOOLS+THINK] ★"
+            highlight "CPU-only (${ram} GB RAM) → Qwen3-8B Q4_K_M [TOOLS+THINK] ★"
             M[name]="Qwen3-8B Q4_K_M"; M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[size_gb]=5; M[layers]=36; M[tier]="8B"
         elif (( ram >= 8 )); then
-            highlight "CPU-only (${ram} GB RAM) → Qwen3-4B Q4 [TOOLS+THINK]"
+            highlight "CPU-only (${ram} GB RAM) → Qwen3-4B Q4_K_M [TOOLS+THINK]"
             M[name]="Qwen3-4B Q4_K_M"; M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[size_gb]=3; M[layers]=36; M[tier]="4B"
         else
-            highlight "Low RAM CPU-only → Phi-3.5-mini Q4 (most efficient)"
-            M[name]="Phi-3.5-mini-instruct Q4_K_M"; M[caps]="none"
-            M[file]="Phi-3.5-mini-instruct-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
-            M[size_gb]=2; M[layers]=32; M[tier]="3.8B"
+            highlight "Low RAM CPU-only → Qwen3-1.7B Q8_0 (most efficient)"
+            M[name]="Qwen3-1.7B Q8_0"; M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
+            M[size_gb]=2; M[layers]=28; M[tier]="1.7B"
         fi
         return
     fi
@@ -448,130 +459,122 @@ echo ""
 
 if ! ask_yes_no "Proceed with this configuration?"; then
     echo ""
-    echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━  MODEL PICKER  ━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━  MODEL PICKER  (Feb 2026 ranking)  ━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo -e "  Capability legend:"
     echo -e "    ${GREEN}[TOOLS]${NC}   tool/function calling — agents, JSON, APIs"
-    echo -e "    ${YELLOW}[THINK]${NC}   thinking mode — add /think to prompt for step-by-step reasoning"
-    echo -e "                             add /no_think for fast plain answers"
-    echo -e "    ${MAGENTA}[UNCENS]${NC}  uncensored — no content restrictions (fine-tuned)"
-    echo -e "    ${CYAN}★${NC}         best pick for that VRAM tier"
+    echo -e "    ${YELLOW}[THINK]${NC}   chain-of-thought mode — add /think to prompt  |  /no_think = fast"
+    echo -e "    ${MAGENTA}[UNCENS]${NC}  uncensored fine-tune — no content restrictions"
+    echo -e "    ${CYAN}★${NC}         recommended pick for that VRAM tier"
     echo ""
-    echo "  ┌────┬──────────────────────────────────┬──────┬──────┬──────────────────────────┐"
-    echo "  │ #  │ Model                            │ Quant│ VRAM │ Capabilities             │"
-    echo "  ├────┼──────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │  1 │ Phi-3.5-mini 3.8B                │ Q4   │ CPU  │ (basic chat)             │"
-    echo "  │  2 │ Qwen3-1.7B                       │ Q8   │ CPU  │ [TOOLS] [THINK]          │"
-    echo "  │  3 │ Qwen3-4B                         │ Q4   │ ~3GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  4 │ Qwen2.5-3B                       │ Q6   │ ~2GB │ [TOOLS]                  │"
-    echo "  │  5 │ Qwen3-8B                         │ Q4   │ ~5GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  6 │ Qwen3-8B                         │ Q6   │ ~6GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  7 │ DeepSeek-R1-Distill-Qwen-7B      │ Q4   │ ~5GB │ ★ [THINK]                │"
-    echo "  │  8 │ Dolphin3.0-8B                    │ Q4   │ ~5GB │ [UNCENS]                 │"
-    echo "  │  9 │ Dolphin3.0-8B                    │ Q6   │ ~6GB │ [UNCENS]                 │"
-    echo "  │ 10 │ Gemma-3-12B                      │ Q4   │ ~8GB │ [TOOLS]                  │"
-    echo "  │ 11 │ Mistral-Nemo-12B                 │ Q4   │ ~7GB │ [TOOLS]                  │"
-    echo "  │ 12 │ Mistral-Nemo-12B                 │ Q5   │ ~8GB │ [TOOLS]                  │"
-    echo "  │ 13 │ Qwen3-14B                        │ Q4   │ ~9GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 14 │ DeepSeek-R1-Distill-Qwen-14B     │ Q4   │ ~9GB │ ★ [THINK]                │"
-    echo "  │ 15 │ Qwen2.5-14B                      │ Q4   │ ~9GB │ [TOOLS]                  │"
-    echo "  │ 16 │ Mistral-Small-22B                │ Q4   │~13GB │ [TOOLS]                  │"
-    echo "  │ 17 │ Gemma-3-27B                      │ Q4   │~16GB │ [TOOLS]                  │"
-    echo "  │ 18 │ Qwen3-30B-A3B  (MoE ★fast)      │ Q4   │~16GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 19 │ Qwen3-32B                        │ Q4   │~19GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 20 │ DeepSeek-R1-Distill-Qwen-32B     │ Q4   │~19GB │ [THINK]                  │"
-    echo "  │ 21 │ Qwen2.5-32B                      │ Q4   │~19GB │ [TOOLS]                  │"
-    echo "  └────┴──────────────────────────────────┴──────┴──────┴──────────────────────────┘"
+    echo "  ┌────┬──────────────────────────────────────┬──────┬──────┬──────────────────────────┐"
+    echo "  │ #  │ Model                                │ Quant│ VRAM │ Capabilities             │"
+    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
+    echo "  │    │ ── TINY / CPU ────────────────────── │      │      │                          │"
+    echo "  │  1 │ Qwen3-1.7B                           │ Q8   │ CPU  │ ★ [TOOLS] [THINK]        │"
+    echo "  │  2 │ Qwen3-4B                             │ Q4   │ ~3GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │  3 │ Phi-4-mini 3.8B    [tiny/strong]     │ Q4   │ CPU  │ ★ [TOOLS] [THINK]        │"
+    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
+    echo "  │    │ ── 6-8 GB VRAM ───────────────────── │      │      │                          │"
+    echo "  │  4 │ Qwen3-8B                             │ Q4   │ ~5GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │  5 │ Qwen3-8B                             │ Q6   │ ~6GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │  6 │ DeepSeek-R1-0528-Qwen3-8B            │ Q4   │ ~5GB │ ★ [THINK] top reasoning  │"
+    echo "  │  7 │ Gemma-3-12B                          │ Q4   │ ~8GB │ [TOOLS] Google vision    │"
+    echo "  │  8 │ Dolphin3.0-8B                        │ Q4   │ ~5GB │ [UNCENS]                 │"
+    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
+    echo "  │    │ ── 10-12 GB VRAM ─────────────────── │      │      │                          │"
+    echo "  │  9 │ Phi-4-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] top coding+math│"
+    echo "  │ 10 │ Qwen3-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │ 11 │ DeepSeek-R1-Distill-Qwen-14B         │ Q4   │ ~9GB │ [THINK] deep reasoning   │"
+    echo "  │ 12 │ Gemma-3-27B (partial offload)        │ Q4   │~12GB │ [TOOLS] Google           │"
+    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
+    echo "  │    │ ── 16-24 GB VRAM ─────────────────── │      │      │                          │"
+    echo "  │ 13 │ Mistral-Small-3.1-24B                │ Q4   │~14GB │ [TOOLS] [THINK] 128K ctx │"
+    echo "  │ 14 │ Mistral-Small-3.2-24B                │ Q4   │~14GB │ ★ [TOOLS] [THINK] newest │"
+    echo "  │ 15 │ Qwen3-30B-A3B  (MoE ★fast)          │ Q4   │~16GB │ ★ [TOOLS] [THINK] MoE    │"
+    echo "  │ 16 │ Qwen3-32B                            │ Q4   │~19GB │ ★ [TOOLS] [THINK]        │"
+    echo "  │ 17 │ DeepSeek-R1-Distill-Qwen-32B         │ Q4   │~19GB │ [THINK] deep reasoning   │"
+    echo "  │ 18 │ Gemma-3-27B                          │ Q4   │~16GB │ [TOOLS] Google           │"
+    echo "  └────┴──────────────────────────────────────┴──────┴──────┴──────────────────────────┘"
     echo ""
-    echo -e "  ${YELLOW}MoE note (18):${NC} 30B params, only 3B active per token → 30B quality at 8B speed."
-    echo -e "  ${YELLOW}Distill note (7,14,20):${NC} DeepSeek-R1 reasoning distilled into smaller, fast models."
+    echo -e "  ${YELLOW}MoE note (15):${NC} 30B total params, only 3B active per token → 30B quality, 8B speed."
+    echo -e "  ${YELLOW}R1-0528 (6):${NC}  Updated May 2025 distill — significantly improved reasoning over original R1."
+    echo -e "  ${CYAN}Tip:${NC} gpt-oss:20b (OpenAI open-weight, 16 GB, 140 t/s) is available via: llm-add"
     echo ""
-    read -r -p "  Choice [1-21]: " manual_choice
+    read -r -p "  Choice [1-18]: " manual_choice
     case "$manual_choice" in
-        1)  M[name]="Phi-3.5-mini-instruct Q4_K_M";           M[caps]="none"
-            M[file]="Phi-3.5-mini-instruct-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
-            M[size_gb]=2;  M[layers]=32; M[tier]="3.8B" ;;
-        2)  M[name]="Qwen3-1.7B Q8_0";                            M[caps]="TOOLS + THINK"
+        1)  M[name]="Qwen3-1.7B Q8_0";                            M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
             M[size_gb]=2;  M[layers]=28; M[tier]="1.7B" ;;
-        3)  M[name]="Qwen3-4B Q4_K_M";                            M[caps]="TOOLS + THINK"
+        2)  M[name]="Qwen3-4B Q4_K_M";                            M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[size_gb]=3;  M[layers]=36; M[tier]="4B" ;;
-        4)  M[name]="Qwen2.5-3B-Instruct Q6_K";                   M[caps]="TOOLS"
-            M[file]="Qwen2.5-3B-Instruct-Q6_K.gguf"
-            M[url]="https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q6_K.gguf"
-            M[size_gb]=2;  M[layers]=36; M[tier]="3B" ;;
-        5)  M[name]="Qwen3-8B Q4_K_M";                            M[caps]="TOOLS + THINK"
+        3)  M[name]="Phi-4-mini Q4_K_M";                          M[caps]="TOOLS + THINK"
+            M[file]="phi-4-mini-instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf"
+            M[size_gb]=3;  M[layers]=32; M[tier]="3.8B" ;;
+        4)  M[name]="Qwen3-8B Q4_K_M";                            M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
             M[size_gb]=5;  M[layers]=36; M[tier]="8B" ;;
-        6)  M[name]="Qwen3-8B Q6_K";                              M[caps]="TOOLS + THINK"
+        5)  M[name]="Qwen3-8B Q6_K";                              M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-8B-Q6_K.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
             M[size_gb]=6;  M[layers]=36; M[tier]="8B" ;;
-        7)  M[name]="DeepSeek-R1-Distill-Qwen-7B Q4_K_M";        M[caps]="THINK"
-            M[file]="DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
-            M[size_gb]=5;  M[layers]=28; M[tier]="7B" ;;
+        6)  M[name]="DeepSeek-R1-0528-Qwen3-8B Q4_K_M";          M[caps]="THINK"
+            M[file]="DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/main/DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
+            M[size_gb]=5;  M[layers]=36; M[tier]="8B" ;;
+        7)  M[name]="Gemma-3-12B Q4_K_M";                        M[caps]="TOOLS"
+            M[file]="google_gemma-3-12b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
+            M[size_gb]=8;  M[layers]=46; M[tier]="12B" ;;
         8)  M[name]="Dolphin3.0-Llama3.1-8B Q4_K_M";             M[caps]="UNCENS"
             M[file]="Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
             M[size_gb]=5;  M[layers]=32; M[tier]="8B" ;;
-        9)  M[name]="Dolphin3.0-Llama3.1-8B Q6_K";               M[caps]="UNCENS"
-            M[file]="Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
-            M[url]="https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
-            M[size_gb]=6;  M[layers]=32; M[tier]="8B" ;;
-        10) M[name]="Gemma-3-12B Q4_K_M";                        M[caps]="TOOLS"
-            M[file]="google_gemma-3-12b-it-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
-            M[size_gb]=8;  M[layers]=46; M[tier]="12B" ;;
-        11) M[name]="Mistral-Nemo-12B Q4_K_M";                   M[caps]="TOOLS"
-            M[file]="Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
-            M[size_gb]=7;  M[layers]=40; M[tier]="12B" ;;
-        12) M[name]="Mistral-Nemo-12B Q5_K_M";                   M[caps]="TOOLS"
-            M[file]="Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
-            M[size_gb]=8;  M[layers]=40; M[tier]="12B" ;;
-        13) M[name]="Qwen3-14B Q4_K_M";                          M[caps]="TOOLS + THINK"
+        9)  M[name]="Phi-4-14B Q4_K_M";                          M[caps]="TOOLS + THINK"
+            M[file]="phi-4-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
+            M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
+        10) M[name]="Qwen3-14B Q4_K_M";                          M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
             M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
-        14) M[name]="DeepSeek-R1-Distill-Qwen-14B Q4_K_M";      M[caps]="THINK"
+        11) M[name]="DeepSeek-R1-Distill-Qwen-14B Q4_K_M";      M[caps]="THINK"
             M[file]="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
             M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
-        15) M[name]="Qwen2.5-14B-Instruct Q4_K_M";               M[caps]="TOOLS"
-            M[file]="Qwen2.5-14B-Instruct-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
-            M[size_gb]=9;  M[layers]=48; M[tier]="14B" ;;
-        16) M[name]="Mistral-Small-22B Q4_K_M";                  M[caps]="TOOLS"
-            M[file]="Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
-            M[size_gb]=13; M[layers]=48; M[tier]="22B" ;;
-        17) M[name]="Gemma-3-27B Q4_K_M";                        M[caps]="TOOLS"
+        12) M[name]="Gemma-3-27B Q4_K_M";                        M[caps]="TOOLS"
             M[file]="google_gemma-3-27b-it-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
             M[size_gb]=16; M[layers]=62; M[tier]="27B" ;;
-        18) M[name]="Qwen3-30B-A3B Q4_K_M (MoE)";               M[caps]="TOOLS + THINK"
+        13) M[name]="Mistral-Small-3.1-24B Q4_K_M";              M[caps]="TOOLS + THINK"
+            M[file]="mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF/resolve/main/mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
+            M[size_gb]=14; M[layers]=40; M[tier]="24B" ;;
+        14) M[name]="Mistral-Small-3.2-24B Q4_K_M";              M[caps]="TOOLS + THINK"
+            M[file]="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+            M[size_gb]=14; M[layers]=40; M[tier]="24B" ;;
+        15) M[name]="Qwen3-30B-A3B Q4_K_M (MoE)";               M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
-            M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B" ;;
-        19) M[name]="Qwen3-32B Q4_K_M";                          M[caps]="TOOLS + THINK"
+            M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B (MoE)" ;;
+        16) M[name]="Qwen3-32B Q4_K_M";                          M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-32B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
             M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
-        20) M[name]="DeepSeek-R1-Distill-Qwen-32B Q4_K_M";      M[caps]="THINK"
+        17) M[name]="DeepSeek-R1-Distill-Qwen-32B Q4_K_M";      M[caps]="THINK"
             M[file]="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
             M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
             M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
-        21) M[name]="Qwen2.5-32B-Instruct Q4_K_M";               M[caps]="TOOLS"
-            M[file]="Qwen2.5-32B-Instruct-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
-            M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
+        18) M[name]="Gemma-3-27B Q4_K_M";                        M[caps]="TOOLS"
+            M[file]="google_gemma-3-27b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
+            M[size_gb]=16; M[layers]=62; M[tier]="27B" ;;
         *)  warn "Invalid choice — keeping auto-selected model." ;;
     esac
 
@@ -1549,27 +1552,24 @@ echo "════════════════════════�
 # Format: "display_name|quant|vram_gb|caps|file_gb|layers|filename|hf_path"
 # hf_path = repo/resolve/main/filename (after bartowski/)
 declare -a _CATALOG=(
-    "Phi-3.5-mini 3.8B|Q4_K_M|0|basic chat|2|32|Phi-3.5-mini-instruct-Q4_K_M.gguf|Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
     "Qwen3-1.7B|Q8_0|0|TOOLS+THINK|2|28|Qwen_Qwen3-1.7B-Q8_0.gguf|Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
+    "Phi-4-mini 3.8B|Q4_K_M|0|TOOLS+THINK|3|32|phi-4-mini-instruct-Q4_K_M.gguf|phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf"
     "Qwen3-4B|Q4_K_M|3|TOOLS+THINK|3|36|Qwen_Qwen3-4B-Q4_K_M.gguf|Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
-    "Qwen2.5-3B|Q6_K|2|TOOLS|2|36|Qwen2.5-3B-Instruct-Q6_K.gguf|Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q6_K.gguf"
     "Qwen3-8B|Q4_K_M|5|TOOLS+THINK|5|36|Qwen_Qwen3-8B-Q4_K_M.gguf|Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
     "Qwen3-8B|Q6_K|6|TOOLS+THINK|6|36|Qwen_Qwen3-8B-Q6_K.gguf|Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
-    "DeepSeek-R1-Distill-7B|Q4_K_M|5|THINK|5|28|DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf|DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"
+    "DeepSeek-R1-0528-8B ★|Q4_K_M|5|THINK|5|36|DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf|DeepSeek-R1-0528-Qwen3-8B-GGUF/resolve/main/DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
     "Dolphin3.0-8B|Q4_K_M|5|UNCENS|5|32|Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf|Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
     "Dolphin3.0-8B|Q6_K|6|UNCENS|6|32|Dolphin3.0-Llama3.1-8B-Q6_K.gguf|Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
     "Gemma-3-12B|Q4_K_M|8|TOOLS|8|46|google_gemma-3-12b-it-Q4_K_M.gguf|google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
-    "Mistral-Nemo-12B|Q4_K_M|7|TOOLS|7|40|Mistral-Nemo-Instruct-2407-Q4_K_M.gguf|Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q4_K_M.gguf"
-    "Mistral-Nemo-12B|Q5_K_M|8|TOOLS|8|40|Mistral-Nemo-Instruct-2407-Q5_K_M.gguf|Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
+    "Phi-4-14B|Q4_K_M|9|TOOLS+THINK|9|40|phi-4-Q4_K_M.gguf|phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
     "Qwen3-14B|Q4_K_M|9|TOOLS+THINK|9|40|Qwen_Qwen3-14B-Q4_K_M.gguf|Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
     "DeepSeek-R1-Distill-14B|Q4_K_M|9|THINK|9|40|DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf|DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
-    "Qwen2.5-14B|Q4_K_M|9|TOOLS|9|48|Qwen2.5-14B-Instruct-Q4_K_M.gguf|Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf"
-    "Mistral-Small-22B|Q4_K_M|13|TOOLS|13|48|Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf|Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
-    "Gemma-3-27B|Q4_K_M|16|TOOLS|16|62|google_gemma-3-27b-it-Q4_K_M.gguf|google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
+    "Mistral-Small-3.1-24B ★|Q4_K_M|14|TOOLS+THINK|14|40|mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf|mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF/resolve/main/mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
+    "Mistral-Small-3.2-24B ★★|Q4_K_M|14|TOOLS+THINK|14|40|mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf|mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+    "Gemma-3-27B (Google)|Q4_K_M|12|TOOLS|16|62|google_gemma-3-27b-it-Q4_K_M.gguf|google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
     "Qwen3-30B-A3B MoE|Q4_K_M|16|TOOLS+THINK|18|48|Qwen_Qwen3-30B-A3B-Q4_K_M.gguf|Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
     "Qwen3-32B|Q4_K_M|19|TOOLS+THINK|19|64|Qwen_Qwen3-32B-Q4_K_M.gguf|Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
     "DeepSeek-R1-Distill-32B|Q4_K_M|19|THINK|19|64|DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf|DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
-    "Qwen2.5-32B|Q4_K_M|19|TOOLS|19|64|Qwen2.5-32B-Instruct-Q4_K_M.gguf|Qwen2.5-32B-Instruct-GGUF/resolve/main/Qwen2.5-32B-Instruct-Q4_K_M.gguf"
 )
 
 _show_table() {
@@ -3042,6 +3042,193 @@ info "Autonomous coworking tools installed."
 info "  cowork  — Open Interpreter (code execution, file ops, web browsing)"
 info "  aider   — AI pair programmer (git-integrated, edit files directly)"
 
+
+# =============================================================================
+# LLM-CHECKER — hardware scan, model ranking, installed models status
+# =============================================================================
+cat > "$BIN_DIR/llm-checker" <<'CHECKER_EOF'
+#!/usr/bin/env bash
+# llm-checker — live hardware + model ranking dashboard
+# Shows: GPU/VRAM/RAM, installed models, recommended pick, full ranked catalog.
+
+set -uo pipefail
+
+# ── Colours ───────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    G='\033[0;32m' Y='\033[0;33m' C='\033[0;36m' M='\033[0;35m'
+    R='\033[0;31m' W='\033[1;37m' N='\033[0m'
+else
+    G='' Y='' C='' M='' R='' W='' N=''
+fi
+
+# ── Hardware ─────────────────────────────────────────────────────────────────
+VRAM=0; GPU_NAME="None"; HAS_GPU=0
+if command -v nvidia-smi &>/dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name          --format=csv,noheader 2>/dev/null | head -1 || true)
+    VRAM=$(     nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
+                | head -1 | awk '{print int($1/1024)}' || echo 0)
+    (( VRAM > 0 )) && HAS_GPU=1
+elif command -v rocminfo &>/dev/null; then
+    GPU_NAME=$(rocminfo 2>/dev/null | awk '/Marketing Name/{$1=$2=""; print $0; exit}' | xargs)
+    VRAM=$(rocminfo 2>/dev/null | grep -i "size:" | grep -v "0 bytes" \
+        | awk '{print int($2/1024/1024/1024)}' | sort -rn | head -1 || echo 0)
+    (( VRAM > 0 )) && HAS_GPU=1
+fi
+RAM_GB=$(awk '/MemTotal/{print int($2/1024/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+THREADS=$(nproc 2>/dev/null || echo 4)
+
+# ── Config ────────────────────────────────────────────────────────────────────
+CONFIG="$HOME/.config/local-llm/selected_model.conf"
+GGUF_DIR="$HOME/.local/share/llm-models"
+ACTIVE_MODEL=""; ACTIVE_TAG=""
+if [[ -f "$CONFIG" ]]; then
+    ACTIVE_MODEL=$(grep "^MODEL_NAME=" "$CONFIG" | head -1 | cut -d'"' -f2 || true)
+    ACTIVE_TAG=$(  grep "^OLLAMA_TAG="  "$CONFIG" | head -1 | cut -d'"' -f2 || true)
+fi
+
+# ── Header ─────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${C}╔══════════════════════════════════════════════════════════════════╗${N}"
+echo -e "${C}║              🔍  LLM CHECKER  —  System & Model Status          ║${N}"
+echo -e "${C}╚══════════════════════════════════════════════════════════════════╝${N}"
+echo ""
+
+# ── Hardware box ──────────────────────────────────────────────────────────────
+echo -e "${C}  ┌───────────────────────  HARDWARE  ──────────────────────────┐${N}"
+printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "CPU threads" "$THREADS"
+printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "RAM"         "${RAM_GB} GB"
+if (( HAS_GPU )); then
+    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "GPU"     "$GPU_NAME"
+    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "VRAM"    "${VRAM} GB"
+else
+    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "GPU"     "None (CPU-only mode)"
+fi
+echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
+echo ""
+
+# ── Active config ─────────────────────────────────────────────────────────────
+echo -e "${C}  ┌───────────────────────  ACTIVE MODEL  ──────────────────────┐${N}"
+if [[ -n "$ACTIVE_MODEL" ]]; then
+    printf "${C}  │${N}  %-12s ${G}%-48s${C}│${N}\n" "Model"   "$ACTIVE_MODEL"
+    [[ -n "$ACTIVE_TAG" ]] && \
+    printf "${C}  │${N}  %-12s ${Y}%-48s${C}│${N}\n" "Ollama"  "ollama run $ACTIVE_TAG"
+else
+    printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "Model"   "(not configured — run llm-setup)"
+fi
+echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
+echo ""
+
+# ── Ollama status ─────────────────────────────────────────────────────────────
+echo -e "${C}  ┌───────────────────────  OLLAMA  ────────────────────────────┐${N}"
+if command -v ollama &>/dev/null; then
+    OLLAMA_VER=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
+    printf "${C}  │${N}  %-12s ${G}%-48s${C}│${N}\n" "Version" "ollama $OLLAMA_VER"
+    if curl -s --max-time 1 http://localhost:11434/api/tags &>/dev/null; then
+        INSTALLED_TAGS=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' ' ')
+        printf "${C}  │${N}  %-12s ${G}%-48s${C}│${N}\n" "Status" "running ✔"
+        if [[ -n "$INSTALLED_TAGS" ]]; then
+            echo -e "${C}  │${N}  Installed models:                                             ${C}│${N}"
+            ollama list 2>/dev/null | tail -n +2 | while IFS= read -r line; do
+                printf "${C}  │${N}   ${Y}%-61s${C}│${N}\n" "$line"
+            done
+        else
+            printf "${C}  │${N}  %-12s %-48s${C}│${N}\n" "Models" "(none downloaded yet)"
+        fi
+    else
+        printf "${C}  │${N}  %-12s ${R}%-48s${C}│${N}\n" "Status" "not running  (run: ollama-start)"
+    fi
+else
+    printf "${C}  │${N}  %-12s ${R}%-48s${C}│${N}\n" "Ollama" "not installed  (run: llm-setup)"
+fi
+echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
+echo ""
+
+# ── GGUF files ────────────────────────────────────────────────────────────────
+if [[ -d "$GGUF_DIR" ]] && ls "$GGUF_DIR"/*.gguf &>/dev/null 2>&1; then
+    echo -e "${C}  ┌───────────────────────  GGUF FILES  ────────────────────────┐${N}"
+    while IFS= read -r f; do
+        sz=$(du -sh "$f" 2>/dev/null | cut -f1)
+        printf "${C}  │${N}  ${Y}%-12s${N}  %-48s${C}│${N}\n" "$sz" "$(basename "$f")"
+    done < <(ls "$GGUF_DIR"/*.gguf 2>/dev/null)
+    echo -e "${C}  └──────────────────────────────────────────────────────────────┘${N}"
+    echo ""
+fi
+
+# ── Ranked model catalog ──────────────────────────────────────────────────────
+# Format: name | quant | vram_gb | caps | file_gb | rank_tier | note
+declare -a _RANKED=(
+    "Qwen3-1.7B          |Q8_0  |  0|TOOLS+THINK |  2|1   |ultra-fast tiny model"
+    "Phi-4-mini 3.8B ★  |Q4_K_M|  0|TOOLS+THINK |  3|1   |strong tiny ★"
+    "Qwen3-4B            |Q4_K_M|  3|TOOLS+THINK |  3|2   |best 4B"
+    "Qwen3-8B            |Q4_K_M|  5|TOOLS+THINK |  5|3   |great all-rounder ★"
+    "Qwen3-8B            |Q6_K  |  6|TOOLS+THINK |  6|3   |higher quality"
+    "DeepSeek-R1-D-7B    |Q4_K_M|  5|THINK       |  5|3   |reasoning specialist"
+    "Dolphin3.0-8B       |Q4_K_M|  5|UNCENS      |  5|3   |no restrictions"
+    "Gemma-3-12B         |Q4_K_M|  8|TOOLS       |  8|3   |Google quality"
+    "Phi-4-14B           |Q4_K_M|  9|TOOLS+THINK |  9|4   |best <16GB ★"
+    "Qwen3-14B           |Q4_K_M|  9|TOOLS+THINK |  9|4   |top general ★"
+    "DeepSeek-R1-D-14B   |Q4_K_M|  9|THINK       |  9|4   |best reasoning <16GB"
+    "Qwen2.5-14B         |Q4_K_M|  9|TOOLS       |  9|4   |proven performer"
+    "Mistral-Small-3.1   |Q4_K_M| 14|TOOLS       | 14|5   |fast + capable 24B"
+    "Gemma-3-27B         |Q4_K_M| 16|TOOLS       | 16|5   |Google flagship"
+    "Qwen3-30B-A3B (MoE) |Q4_K_M| 16|TOOLS+THINK | 18|5   |30B at 8B speed ★"
+    "Qwen3-32B           |Q4_K_M| 19|TOOLS+THINK | 19|6   |best consumer ★"
+    "DeepSeek-R1-D-32B   |Q4_K_M| 19|THINK       | 19|6   |best local reasoning"
+    "Qwen2.5-32B         |Q4_K_M| 19|TOOLS       | 19|6   |strong coder"
+)
+
+# Auto-recommend
+_RECOMMEND=""
+for entry in "${_RANKED[@]}"; do
+    IFS='|' read -r _n _q _v _c _fg _t _note <<< "$entry"
+    _vg=$(echo "$_v" | tr -d ' ')
+    if (( HAS_GPU && VRAM >= _vg && _vg >= 0 )) || \
+       (( ! HAS_GPU && _vg == 0 )) || \
+       (( ! HAS_GPU && _fg * 2 <= RAM_GB )); then
+        _RECOMMEND="${_n// /} ${_q// /}  —  ${_note// /}"
+        break
+    fi
+done
+
+echo -e "${G}  ┌──────────────────────  MODEL RANKING  ──────────────────────┐${N}"
+echo -e "${G}  │  Sorted by quality tier. ✓ = fits your hardware.            │${N}"
+echo -e "${G}  ├────┬─────────────────────┬──────┬──────┬─────────────────────┤${N}"
+printf "${G}  │${N} %-3s${G}│${N} %-21s${G}│${N}%-6s${G}│${N}%-6s${G}│${N} %-21s${G}│${N}\n" \
+    "Fit" "Model" "Quant" " VRAM " "Notes"
+echo -e "${G}  ├────┼─────────────────────┼──────┼──────┼─────────────────────┤${N}"
+
+for entry in "${_RANKED[@]}"; do
+    IFS='|' read -r _n _q _v _c _fg _t _note <<< "$entry"
+    _vg=$(echo "$_v" | tr -d ' ')
+    _fits=" "
+    if (( HAS_GPU && _vg == 0 )) || \
+       (( HAS_GPU && VRAM >= _vg )) || \
+       (( ! HAS_GPU && _vg == 0 )) || \
+       (( ! HAS_GPU && _fg * 2 <= RAM_GB )); then
+        _fits="${G}✓${N}"
+    fi
+    _vstr="CPU"
+    (( _vg > 0 )) && _vstr="~${_vg}GB"
+    printf "${G}  │${N} %-3b${G}│${N} %-21s${G}│${N}%-6s${G}│${N}%-6s${G}│${N} %-21s${G}│${N}\n" \
+        "$_fits" "$(echo "$_n" | xargs)" "$(echo "$_q" | xargs)" "$_vstr" "$(echo "$_note" | xargs)"
+done
+echo -e "${G}  └────┴─────────────────────┴──────┴──────┴─────────────────────┘${N}"
+echo ""
+
+if [[ -n "$_RECOMMEND" ]]; then
+    echo -e "  ${G}Recommended for your hardware:${N}"
+    echo -e "    ${Y}${_RECOMMEND}${N}"
+    echo ""
+fi
+
+echo -e "  ${C}Commands:${N}  ${Y}llm-add${N}    download a model from this list"
+echo -e "            ${Y}llm-switch${N} change your active model"
+echo -e "            ${Y}llm-update${N} upgrade Ollama + Jan.ai"
+echo ""
+CHECKER_EOF
+chmod +x "$BIN_DIR/llm-checker"
+info "llm-checker written."
+
 # =============================================================================
 # STEP 14 — ALIASES
 # =============================================================================
@@ -3056,6 +3243,7 @@ alias gguf-list='local-models-info'
 alias gguf-run='run-gguf'
 alias ask='run-model'   # run-model reads config + passes prompt; gguf-run takes a filepath
 alias llm-status='local-models-info'
+alias llm-checker='llm-checker'
 alias chat='llm-chat'
 alias webui='llm-web'         # Jan.ai desktop UI (falls back to Neural Terminal on WSL2)
 alias jan='llm-web'           # shorthand for Jan.ai
@@ -3089,6 +3277,7 @@ llm-quick-help() {
     echo -e "  ${C}|${N}   ${Y}llm-stop${N}      stop Ollama + Jan.ai + UIs                      ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-update${N}    upgrade Ollama + Jan.ai, pull latest model      ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-status${N}    show models, disk, config                       ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}llm-checker${N}   hardware scan + ranked model catalog            ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-help${N}      full command reference                          ${C}|${N}"
     echo -e "  ${C}+-----------------------------------------------------------------+${N}"
     echo ""
@@ -3121,6 +3310,7 @@ Local LLM commands:
     --ctx N                Context window
   gguf-list              List downloaded GGUF files
   llm-status             Show models, disk, and hardware config
+  llm-checker            Hardware scan + ranked model catalog + what fits your GPU
   cowork                 Open Interpreter — AI that runs code + manages files
   ai / aider             AI pair programmer with git integration
   webui-alt              Open WebUI browser UI at http://localhost:8080 (optional install)
@@ -3360,6 +3550,7 @@ echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Ollama management ─────�
 echo -e "  ${CYAN}│${NC}   ${YELLOW}ollama-start${NC}  Start the Ollama backend                        ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}ollama-list${NC}   List all downloaded Ollama models               ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-status${NC}    Show models, disk usage, and config             ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-checker${NC}   Hardware scan + ranked model catalog            ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}gguf-run${NC}      Run a raw GGUF file directly via llama-cpp      ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}gguf-list${NC}     List all downloaded GGUF files                  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
