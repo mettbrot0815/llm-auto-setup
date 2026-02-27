@@ -1809,7 +1809,7 @@ if [[ -n "$JAN_NEW_TAG" && -n "$JAN_CURRENT" ]]; then
     JAN_NEW_VER="${JAN_NEW_TAG#v}"
     if [[ "$JAN_NEW_VER" != "$JAN_CURRENT" ]]; then
         echo "  Jan.ai: $JAN_CURRENT → $JAN_NEW_VER — downloading…"
-        JAN_DEB="jan-linux-amd64-${JAN_NEW_VER}.deb"
+        JAN_DEB="Jan_${JAN_NEW_VER}_amd64.deb"
         JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_NEW_TAG}/${JAN_DEB}"
         _TMP=$(mktemp /tmp/jan-XXXXX.deb)
         curl -fsSL --progress-bar -o "$_TMP" "$JAN_URL" \
@@ -2992,8 +2992,15 @@ info "Installing Jan.ai runtime dependencies (Electron / X11 / GTK)…"
 JAN_DEPS=(
     libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
     libatspi2.0-0 libsecret-1-0 libx11-xcb1 libxcb-dri3-0
-    libasound2 libgbm1 libxshmfence1 libdrm2
+    libgbm1 libxshmfence1 libdrm2
 )
+# libasound2 is a virtual package on Ubuntu 24.04 (provided by libasound2t64).
+# Install the real package for the detected distro version; fall back silently.
+if apt-cache show libasound2t64 &>/dev/null 2>&1; then
+    JAN_DEPS+=(libasound2t64)   # Ubuntu 24.04+
+else
+    JAN_DEPS+=(libasound2)      # Ubuntu 22.04 and older
+fi
 sudo apt-get install -y "${JAN_DEPS[@]}" 2>/dev/null \
     || warn "Some Jan runtime deps failed — Jan may not launch."
 
@@ -3026,7 +3033,7 @@ _install_jan() {
         return 1
     fi
     JAN_VER="${JAN_TAG#v}"
-    JAN_DEB="jan-linux-amd64-${JAN_VER}.deb"
+    JAN_DEB="Jan_${JAN_VER}_amd64.deb"
     JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_TAG}/${JAN_DEB}"
     info "Downloading Jan.ai ${JAN_TAG}…"
     if curl -fsSL --progress-bar -o "$TEMP_DIR/$JAN_DEB" "$JAN_URL"; then
