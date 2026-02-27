@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v2.4.0
+# Local LLM Auto-Setup — Universal Edition v2.5.0
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04 — CPU-only through high-end GPU.
@@ -9,7 +9,7 @@
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="2.4.0"
+SCRIPT_VERSION="2.5.0"
 # Set this to your hosted URL to enable auto-update checks on each run:
 SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
@@ -83,15 +83,7 @@ step "Pre-flight checks"
 command -v sudo &>/dev/null || error "sudo is required."
 
 # ── Single sudo prompt — keep credentials alive for the entire script ─────────
-# sudo -v prompts once, then the background loop calls sudo -v (not sudo -n true)
-# every 50 s to extend the TTY-scoped timestamp.
-#
-# Why sudo -v and not sudo -n true:
-#   Ubuntu 22.04+ defaults to timestamp_type=ppid — each process has its own
-#   credential record. sudo -n true refreshes only the subprocess's record,
-#   so the parent shell can still expire and re-prompt mid-install.
-#   sudo -v extends the timestamp for the whole TTY session, which is what
-#   every subsequent sudo call in this script actually checks.
+# sudo -v extends the TTY-scoped timestamp every 50 s (Ubuntu 22.04+ ppid mode).
 echo -e "${CYAN}[sudo]${NC} This script needs elevated privileges for apt, systemd, and CUDA/ROCm."
 sudo -v || error "sudo authentication failed."
 ( while true; do sleep 50; sudo -v; done ) &
@@ -265,21 +257,8 @@ echo ""
 
 # =============================================================================
 # STEP 3 — MODEL SELECTION ENGINE
-# =============================================================================
-# All models are public (no HF token). All from bartowski or TheBloke.
-#
-# Decision tree:
-#   VRAM >= 24 GB → 32B / Mixtral
-#   VRAM >= 16 GB → 22B Q4
-#   VRAM >= 12 GB → 14B Q4 / Nemo 12B Q5
-#   VRAM >=  8 GB → 8B Q6 / Nemo 12B Q4
-#   VRAM >=  6 GB → 8B Q6 (primary), 8B Q4 (fallback)
-#   VRAM >=  4 GB → 8B Q4 / 7B Q4
-#   VRAM >=  2 GB → 3B Q6 / 7B Q2
-#   No GPU / <2GB → 3B Q4 CPU-only
-#
-# CPU layers (n_offload): fills remaining VRAM, rest to RAM.
-# We cap CPU layers so RAM usage stays under (TOTAL_RAM_GB - 4) GB.
+# All public models (bartowski). Tiers: 24GB→32B, 16GB→30B-MoE, 12GB→14B,
+# 10GB→Nemo-12B, 8GB→8B-Q6, 6GB→8B-Q4, 4GB→4B, 2GB→Phi-mini, CPU→auto.
 # =============================================================================
 
 step "Auto-selecting model"
@@ -314,15 +293,7 @@ gpu_layers_for() {
 }
 
 # ── Model definitions ─────────────────────────────────────────────────────────
-# Capability tags shown in the picker:
-#   [TOOLS]  = structured tool/function calling (agents, APIs, JSON output)
-#   [THINK]  = thinking/reasoning mode via <think> tokens
-#              Use: add "/think" to prompt, or set temp 0.6 + top_p 0.95
-#              Skip: add "/no_think" for fast plain answers
-#   [UNCENS] = uncensored fine-tune — no content restrictions
-#   ★        = best recommended pick for that VRAM tier
-#
-# All models from bartowski public repos — no HF token needed.
+# [TOOLS]=function calling  [THINK]=reasoning via /think  [UNCENS]=uncensored  ★=best pick
 
 declare -A M   # holds the chosen model's fields
 
@@ -724,7 +695,7 @@ step "System dependencies"
 
 # Note: apt-get update already ran in the Python environment step above
 
-PKGS=(curl wget git build-essential cmake ninja-build python3 lsb-release zstd ffmpeg pciutils)
+PKGS=(curl wget git build-essential cmake ninja-build python3 lsb-release zstd ffmpeg pciutils bat grc source-highlight)
 (( HAS_AVX2 )) && PKGS+=(libopenblas-dev)   # AVX2 path for CPU layers
 
 sudo apt-get install -y "${PKGS[@]}" || warn "Some packages may have failed."
@@ -743,15 +714,43 @@ step "Directories"
 mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" "$BIN_DIR" "$CONFIG_DIR" "$GUI_DIR"
 info "Directories ready."
 
-# PATH wired to ~/.bashrc only — consistent with alias approach.
-# Use printf: $BIN_DIR expands NOW (real path baked in); \$PATH stays literal
-# so it expands correctly when .bashrc is sourced later.
+# PATH: $BIN_DIR baked in now; \$PATH expands when .bashrc is sourced.
 if ! grep -q "# llm-auto-setup PATH" "$HOME/.bashrc" 2>/dev/null; then
     { printf '\n# llm-auto-setup PATH\n'
       printf '[[ ":$PATH:" != *":%s:"* ]] && export PATH="%s:$PATH"\n'           "$BIN_DIR" "$BIN_DIR"; } >> "$HOME/.bashrc"
     info "Added $BIN_DIR to PATH in ~/.bashrc"
 fi
 [[ ":$PATH:" != *":$BIN_DIR:"* ]] && export PATH="$BIN_DIR:$PATH"
+
+# ── Terminal syntax highlighting (bat + grc) ──────────────────────────────────
+if ! grep -q "# llm-bat-grc" "$HOME/.bashrc" 2>/dev/null; then
+    cat >> "$HOME/.bashrc" <<'BATGRC'
+
+# ── Syntax highlighting — llm-auto-setup ──────────────────────────────────────
+# bat: syntax-highlighted cat; fall back transparently if not installed
+if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then
+    alias bat='batcat'
+fi
+if command -v bat &>/dev/null; then
+    alias cat='bat --paging=never --style=plain'
+    export MANPAGER='sh -c "col -bx | bat --language=man --style=plain --paging=always"'
+    # source-highlight: colorize less output (falls back silently if absent)
+    export LESSOPEN="| src-hilite-lesspipe.sh %s" 2>/dev/null || true
+fi
+# grc: colorize common commands (gcc, make, diff, ping, ps, netstat, etc.)
+if command -v grc &>/dev/null; then
+    alias diff='grc diff'
+    alias make='grc make'
+    alias gcc='grc gcc'
+    alias g++='grc g++'
+    alias ping='grc ping'
+    alias ps='grc ps'
+    alias netstat='grc netstat'
+fi
+# llm-bat-grc
+BATGRC
+    info "Terminal syntax highlighting configured (bat + grc)."
+fi
 
 # =============================================================================
 # STEP 6 — NVIDIA DRIVER CHECK
@@ -774,9 +773,7 @@ if (( HAS_NVIDIA )); then
     step "CUDA toolkit"
 
     setup_cuda_env() {
-        # Run ldconfig first so symlinks like libcudart.so.12 are created from
-        # libcudart.so.12.x.y.z before we try to find them.
-        sudo ldconfig 2>/dev/null || true
+            sudo ldconfig 2>/dev/null || true
 
         local lib_dir=""
         # Search for libcudart.so.12* (wildcard catches .12, .12.x, .12.x.y.z)
@@ -1356,24 +1353,16 @@ cat > "$BIN_DIR/llm-update" <<'UPDATE_EOF'
 # llm-update — upgrade Ollama, Jan.ai, Open WebUI (if installed), and pull latest model
 set -uo pipefail
 
-OWUI_VENV="$HOME/.local/share/open-webui-venv"
 CONFIG="$HOME/.config/local-llm/selected_model.conf"
+OWUI_VENV="$HOME/.local/share/open-webui-venv"
 
 echo ""
-echo "═══════════════════════════════════════════"
-echo "  LLM Stack Updater"
-echo "═══════════════════════════════════════════"
+echo "═══════════════  LLM Stack Updater  ═══════════════"
 echo ""
 
-# ── Ollama ────────────────────────────────────────────────────────────────────
 echo "[ 1/4 ] Updating Ollama…"
-if curl -fsSL https://ollama.com/install.sh | sh; then
-    echo "  ✔ Ollama updated: $(ollama --version 2>/dev/null || echo 'ok')"
-else
-    echo "  ✘ Ollama update failed — check internet connection."
-fi
+curl -fsSL https://ollama.com/install.sh | sh     && echo "  ✔ Ollama: $(ollama --version 2>/dev/null || echo ok)"     || echo "  ✘ Ollama update failed."
 
-# ── Open WebUI ────────────────────────────────────────────────────────────────
 echo ""
 echo "[ 2/4 ] Updating Jan.ai…"
 # Jan self-updates via the app; here we check for a newer .deb and install if available
@@ -1403,7 +1392,6 @@ fi
 
 echo ""
 echo "[ 3/4 ] Updating Open WebUI (if installed)…"
-OWUI_VENV="$HOME/.local/share/open-webui-venv"
 if [[ -d "$OWUI_VENV" ]]; then
     OLD_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "?")
     "$OWUI_VENV/bin/pip" install --upgrade open-webui --quiet \
@@ -1414,7 +1402,6 @@ else
     echo "  Open WebUI not installed (optional tool, install via optional tools step)."
 fi
 
-# ── Ollama model ──────────────────────────────────────────────────────────────
 echo ""
 echo "[ 4/4 ] Pulling latest model tag…"
 OLLAMA_TAG=""
@@ -2453,10 +2440,7 @@ with open(path, 'w') as f:
 print(f"HTML UI written to {path}")
 PYEOF_HTML
 
-# ── llm-chat launcher ─────────────────────────────────────────────────────────
-# WHY HTTP SERVER: browsers block fetch() from file:// to http:// (CORS policy).
-# We spin up Python's built-in HTTP server so the page loads from
-# http://localhost:8090 — an origin Ollama accepts. No extra deps needed.
+# ── llm-chat launcher — Python HTTP server bypasses CORS for file:// origins ──
 cat > "$BIN_DIR/llm-chat" <<'HTMLLAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2549,39 +2533,55 @@ chmod +x "$BIN_DIR/llm-chat"
 info "Web UI: llm-chat  →  serves on http://localhost:8090"
 
 # =============================================================================
-# JAN.AI — Primary Desktop UI
-# =============================================================================
-# Jan is a native desktop chat app (Electron) with a clean UI, model manager,
-# assistant customisation, and a local API server on port 1337.
-# It connects to Ollama via its "Remote" provider — no extra config needed.
-#
-# WSL2 note: Jan is a GUI app and cannot display in WSL2 unless you have an
-# X server (VcXsrv, WSLg on Windows 11, etc.).  The Neural Terminal
-# (llm-chat) is always available as a zero-dependency browser fallback.
+# JAN.AI — Primary Desktop UI (Electron app)
 # =============================================================================
 step "Jan.ai (primary Web/Desktop UI)"
 
+# ── Electron / X11 runtime dependencies ──────────────────────────────────────
+# Jan is an Electron app — these libs must be present for the binary to launch.
+# They are safe to install on any Ubuntu 22.04/24.04 system; most are already
+# present. We install them unconditionally so Jan works on the first launch.
+info "Installing Jan.ai runtime dependencies (Electron / X11 / GTK)…"
+JAN_DEPS=(
+    libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
+    libatspi2.0-0 libsecret-1-0 libx11-xcb1 libxcb-dri3-0
+    libasound2 libgbm1 libxshmfence1 libdrm2
+)
+sudo apt-get install -y "${JAN_DEPS[@]}" 2>/dev/null \
+    || warn "Some Jan runtime deps failed — Jan may not launch."
+
+# ── WSL2: configure DISPLAY for X forwarding ─────────────────────────────────
+# Windows 11 WSLg sets $DISPLAY automatically; Windows 10 needs VcXsrv.
+# We write a sensible default so Jan launches after 'exec bash'.
+if is_wsl2; then
+    if ! grep -q "# WSL2-DISPLAY" "$HOME/.bashrc" 2>/dev/null; then
+        {   echo ""
+            echo "# WSL2-DISPLAY — X forwarding for Jan.ai and other GUI apps"
+            echo "# Windows 11 WSLg: DISPLAY is set by the kernel automatically."
+            echo "# Windows 10: install VcXsrv, run it with 'Disable access control',"
+            echo "# then DISPLAY=:0.0 connects to it."
+            echo 'if [[ -z "${DISPLAY:-}" ]]; then export DISPLAY=:0.0; fi'
+        } >> "$HOME/.bashrc"
+        info "WSL2: DISPLAY fallback written to ~/.bashrc."
+        info "  Windows 11 WSLg → Jan.ai works out-of-the-box after 'exec bash'."
+        info "  Windows 10     → Install VcXsrv from https://sourceforge.net/projects/vcxsrv/"
+    fi
+fi
+
 _install_jan() {
     info "Detecting latest Jan.ai release…"
-
-    # ── Fetch latest release tag from GitHub ──────────────────────────────────
     JAN_TAG=$(curl -fsSL --max-time 8 \
         "https://api.github.com/repos/janhq/jan/releases/latest" \
         2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4 || true)
-
     if [[ -z "$JAN_TAG" ]]; then
-        warn "Could not fetch latest Jan.ai release tag from GitHub."
-        warn "  Check: https://github.com/janhq/jan/releases"
-        warn "  To install manually: download the .deb and run: sudo dpkg -i jan.deb"
+        warn "Could not fetch Jan.ai release tag from GitHub."
+        warn "  Manual install: https://jan.ai/download  (Linux .deb)"
         return 1
     fi
-
-    # tag looks like "v0.5.14" — strip the leading 'v' for the filename
     JAN_VER="${JAN_TAG#v}"
     JAN_DEB="jan-linux-amd64-${JAN_VER}.deb"
     JAN_URL="https://github.com/janhq/jan/releases/download/${JAN_TAG}/${JAN_DEB}"
-
-    info "Downloading Jan.ai ${JAN_TAG} (${JAN_DEB})…"
+    info "Downloading Jan.ai ${JAN_TAG}…"
     if curl -fsSL --progress-bar -o "$TEMP_DIR/$JAN_DEB" "$JAN_URL"; then
         sudo dpkg -i "$TEMP_DIR/$JAN_DEB" 2>/dev/null \
             || { sudo apt-get install -f -y 2>/dev/null && sudo dpkg -i "$TEMP_DIR/$JAN_DEB"; } \
@@ -2590,34 +2590,26 @@ _install_jan() {
         info "Jan.ai ${JAN_TAG} installed."
         return 0
     else
-        warn "Jan.ai download failed."
-        warn "  Manual install: https://jan.ai/download"
+        warn "Jan.ai download failed.  Manual install: https://jan.ai/download"
         return 1
     fi
 }
 
 JAN_INSTALLED=0
-
-# ── Check if already installed ────────────────────────────────────────────────
 if command -v jan &>/dev/null || [[ -f /opt/jan/jan ]] || [[ -f /usr/bin/jan ]]; then
     _jan_ver=$(jan --version 2>/dev/null | head -1 || echo "installed")
     info "Jan.ai already installed: $_jan_ver"
     JAN_INSTALLED=1
-elif is_wsl2; then
-    # WSL2: Jan.ai is a GUI app — skip unless user confirms an X server is running
-    echo ""
-    echo -e "  ${YELLOW}WSL2 detected.${NC} Jan.ai is a native desktop app."
-    echo -e "  It requires an X server (VcXsrv) or Windows 11 WSLg to display."
-    echo -e "  Without one, only the Neural Terminal (browser UI) will work."
-    echo ""
-    if ask_yes_no "Install Jan.ai anyway? (skip if you don't have an X server)"; then
-        _install_jan && JAN_INSTALLED=1
-    else
-        info "Jan.ai skipped — Neural Terminal (llm-chat) is your browser fallback."
-    fi
 else
     _install_jan && JAN_INSTALLED=1
 fi
+
+# ── Find the installed Jan binary for the summary ─────────────────────────────
+JAN_BIN_PATH=""
+for _jp in /opt/jan/jan /usr/bin/jan /usr/local/bin/jan "$HOME/.local/bin/jan"; do
+    [[ -x "$_jp" ]] && { JAN_BIN_PATH="$_jp"; break; }
+done
+[[ -z "$JAN_BIN_PATH" ]] && JAN_BIN_PATH=$(command -v jan 2>/dev/null || true)
 
 # ── Ensure Jan connects to Ollama ─────────────────────────────────────────────
 # Jan stores app data in ~/jan/ (not ~/.jan/).
@@ -2887,21 +2879,7 @@ fi
 [[ -n "${_tool_sel:-}" ]] && info "Optional tools step complete." || info "Optional tools: skipped." 
 
 # =============================================================================
-# STEP 13b — AUTONOMOUS COWORKING
-# =============================================================================
-# Two tools are installed:
-#
-#  cowork  — Open Interpreter: the LLM can autonomously run code, browse the
-#             web, read/write files, and execute shell commands on your machine.
-#             Think of it as pair-programming where the AI drives.
-#             https://github.com/OpenInterpreter/open-interpreter
-#
-#  aider   — AI pair programmer tightly integrated with git. Understands your
-#             codebase, writes + applies patches, runs tests, commits changes.
-#             https://aider.chat
-#
-# Both are pointed at your local Ollama model via the OpenAI-compatible shim.
-# No cloud API keys needed.
+# STEP 13b — AUTONOMOUS COWORKING (Open Interpreter + Aider)
 # =============================================================================
 step "Autonomous coworking tools"
 # cowork (Open Interpreter) + aider are core tools — always installed.
@@ -3080,6 +3058,7 @@ alias ask='run-model'   # run-model reads config + passes prompt; gguf-run takes
 alias llm-status='local-models-info'
 alias chat='llm-chat'
 alias webui='llm-web'         # Jan.ai desktop UI (falls back to Neural Terminal on WSL2)
+alias jan='llm-web'           # shorthand for Jan.ai
 alias ai='aider'
 alias llm-stop='llm-stop'
 alias llm-update='llm-update'
@@ -3096,7 +3075,7 @@ llm-quick-help() {
     echo -e "  ${C}+-----------------------------------------------------------------+${N}"
     echo -e "  ${C}|${N}  ${M}Chat${N}                                                           ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}chat${N}          Neural Terminal   -> http://localhost:8090       ${C}|${N}"
-    echo -e "  ${C}|${N}   ${Y}webui${N}         Jan.ai desktop UI (falls back to Neural Terminal) ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}jan / webui${N}   Jan.ai desktop UI (falls back to Neural Terminal)  ${C}|${N}"
     echo -e "  ${C}|${N}  ${M}Models${N}                                                         ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}run-model${N}     run default GGUF from CLI                       ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}ollama-run${N}    run any Ollama model  (ollama-run <tag>)         ${C}|${N}"
@@ -3129,7 +3108,7 @@ llm-help() {
     cat <<'HELP'
 Local LLM commands:
   chat                   Open Neural Terminal at http://localhost:8090
-  webui                  Jan.ai desktop UI (→ Neural Terminal fallback in WSL2)
+  jan / webui            Jan.ai desktop UI (→ Neural Terminal fallback in WSL2)
   run-model / ask        Run default GGUF model from CLI
   ollama-pull <tag>      Download an Ollama model
   ollama-run  <tag>      Run an Ollama model interactively
@@ -3350,8 +3329,14 @@ echo ""
 echo -e "  ${CYAN}┌──────────────────────────  COMMANDS  ───────────────────────────┐${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Chat interfaces ─────────────────────────────────────────${NC}  ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}chat${NC}          Open Neural Terminal UI → http://localhost:8090 ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}   ${YELLOW}webui${NC}         Jan.ai desktop UI  (llm-chat if no display) ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}jan${NC}           Launch Jan.ai desktop UI                        ${CYAN}│${NC}"
+if (( JAN_INSTALLED )); then
+    _jan_display="${JAN_BIN_PATH:-jan (binary in PATH)}"
+    printf "  ${CYAN}│${NC}   ${GREEN}%-10s${NC}  %-49s${CYAN}│${NC}\n" "  ✔ installed" "$_jan_display"
+else
+    echo -e "  ${CYAN}│${NC}   ${YELLOW}  ✘ Jan not installed${NC} — run: llm-setup to retry            ${CYAN}│${NC}"
+fi
+echo -e "  ${CYAN}│${NC}   ${YELLOW}chat${NC}          Neural Terminal → http://localhost:8090         ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Run models ──────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}run-model${NC}     Run your default model from the command line    ${CYAN}│${NC}"
@@ -3404,11 +3389,14 @@ echo -e "${GREEN}  ║   Same window. Same directory. Zero friction.            
 echo -e "${GREEN}  ╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}Then:${NC}"
-echo -e "    ${YELLOW}chat${NC}       → http://localhost:8090  (Neural Terminal)"
-echo -e "    ${YELLOW}webui${NC}      → Jan.ai desktop UI  (or Neural Terminal in WSL2)"
+echo -e "    ${YELLOW}jan${NC}        → Jan.ai desktop UI"
+if is_wsl2; then
+    echo -e "    ${YELLOW}           ${NC}  WSL2: needs X server (WSLg on Win11, or VcXsrv on Win10)"
+fi
+echo -e "    ${YELLOW}chat${NC}       → Neural Terminal  http://localhost:8090  (browser, no X needed)"
 echo -e "    ${YELLOW}run-model${NC}  → quick CLI test"
 echo -e "    ${YELLOW}llm-help${NC}   → all commands"
-is_wsl2 && { echo ""; echo -e "  ${YELLOW}  WSL2:${NC} after reboot run ${YELLOW}ollama-start${NC} before using any UI"; }
+is_wsl2 && { echo ""; echo -e "  ${YELLOW}  WSL2:${NC} run ${YELLOW}exec bash${NC} first, then ${YELLOW}ollama-start${NC} before launching any UI"; }
 echo ""
 
 # ── Troubleshooting ───────────────────────────────────────────────────────────
