@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Auto-Setup — Universal Edition v2.9.0
+# Local LLM Auto-Setup — Universal Edition v3.0.0
 # Scans your hardware and automatically selects the best model.
 # No Hugging Face token required — all models are from public repos.
 # Supports: Ubuntu 22.04 / 24.04, Debian 12, Linux Mint 21+, Pop!_OS 22.04.
@@ -10,7 +10,7 @@
 set -uo pipefail
 
 # ---------- Version -----------------------------------------------------------
-SCRIPT_VERSION="2.9.0"
+SCRIPT_VERSION="3.0.0"
 # Set this to your hosted URL to enable auto-update checks on each run:
 SCRIPT_UPDATE_URL=""
 # Local install path — script saves itself here after a successful install:
@@ -26,6 +26,17 @@ TEMP_DIR="$MODEL_BASE/temp"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/local-llm"
 ALIAS_FILE="$HOME/.local_llm_aliases"
+# Shared download cache — pip, npm, apt downloads reused across runs
+PKG_CACHE_DIR="$HOME/.cache/llm-setup"
+mkdir -p "$PKG_CACHE_DIR/pip" "$PKG_CACHE_DIR/npm" "$PKG_CACHE_DIR/apt"
+export PIP_CACHE_DIR="$PKG_CACHE_DIR/pip"   # pip respects this env var automatically
+# npm cache reuse (avoids re-downloading during Claude Code / Codex install)
+export npm_config_cache="$PKG_CACHE_DIR/npm"
+# apt: keep downloaded .deb files in a persistent cache dir between setup runs.
+# This is optional — apt already caches in /var/cache/apt — but our dir is
+# inside $HOME so it survives system cache cleans and is user-accessible.
+_APT_OPTS=(-o Dir::Cache::archives="$PKG_CACHE_DIR/apt" -o Debug::NoLocking=1)
+_apt_install() { sudo apt-get install -y "${_APT_OPTS[@]}" "$@"; }
 MODEL_CONFIG="$CONFIG_DIR/selected_model.conf"
 GUI_DIR="$HOME/.local/share/llm-webui"
 
@@ -193,6 +204,47 @@ fi
 # STEP 2 — SYSTEM SCAN
 # =============================================================================
 step "Hardware detection"
+# ── Show already-installed models so user knows what's there ──────────────────
+_GGUF_DIR="$HOME/local-llm-models/gguf"
+_OLLAMA_OK=0; command -v ollama &>/dev/null && _OLLAMA_OK=1
+
+_installed_gguf=()
+if [[ -d "$_GGUF_DIR" ]]; then
+    while IFS= read -r -d '' _f; do
+        _installed_gguf+=( "$(basename "$_f")" )
+    done < <(find "$_GGUF_DIR" -maxdepth 1 -name '*.gguf' -print0 2>/dev/null)
+fi
+
+_installed_ollama=()
+if (( _OLLAMA_OK )); then
+    while IFS= read -r _line; do
+        [[ "$_line" == NAME* ]] && continue
+        _tag=$(awk '{print $1}' <<< "$_line")
+        [[ -n "$_tag" ]] && _installed_ollama+=( "$_tag" )
+    done < <(ollama list 2>/dev/null || true)
+fi
+
+if (( ${#_installed_gguf[@]} > 0 || ${#_installed_ollama[@]} > 0 )); then
+    echo ""
+    echo -e "  ${GREEN}┌──────────────────────  INSTALLED MODELS  ───────────────────────┐${NC}"
+    if (( ${#_installed_gguf[@]} > 0 )); then
+        echo -e "  ${GREEN}│${NC}  ${CYAN}GGUF files:${NC}                                                    ${GREEN}│${NC}"
+        for _m in "${_installed_gguf[@]}"; do
+            printf "  ${GREEN}│${NC}   ✔  %-56s ${GREEN}│${NC}
+" "$_m"
+        done
+    fi
+    if (( ${#_installed_ollama[@]} > 0 )); then
+        echo -e "  ${GREEN}│${NC}  ${CYAN}Ollama models:${NC}                                                 ${GREEN}│${NC}"
+        for _m in "${_installed_ollama[@]}"; do
+            printf "  ${GREEN}│${NC}   ✔  %-56s ${GREEN}│${NC}
+" "$_m"
+        done
+    fi
+    echo -e "  ${GREEN}└────────────────────────────────────────────────────────────────┘${NC}"
+    echo ""
+fi
+
 
 # ---------- CPU ---------------------------------------------------------------
 CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown")
@@ -577,46 +629,61 @@ if ! ask_yes_no "Proceed with this configuration?"; then
     echo ""
     echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━  MODEL PICKER  (Feb 2026 ranking)  ━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    # ── Detect already-installed models for visual indicators ────────────────
+    _gguf_dir="$HOME/local-llm-models/gguf"
+    _installed_gguf=(); while IFS= read -r -d '' f; do _installed_gguf+=("$(basename "$f")"); done < <(find "$_gguf_dir" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null)
+    _installed_ollama=(); while IFS= read -r line; do _installed_ollama+=("$line"); done < <(ollama list 2>/dev/null | awk 'NR>1{print $1}')
+    _is_installed() {
+        local f="$1"
+        for _g in "${_installed_gguf[@]:-}"; do [[ "$_g" == "$f" ]] && return 0; done
+        return 1
+    }
+    _mark() { _is_installed "$1" && echo -e " ${GREEN}✔${NC}" || echo "  "; }
+
     echo -e "  Capability legend:"
     echo -e "    ${GREEN}[TOOLS]${NC}   tool/function calling — agents, JSON, APIs"
     echo -e "    ${YELLOW}[THINK]${NC}   chain-of-thought mode — add /think to prompt  |  /no_think = fast"
     echo -e "    ${MAGENTA}[UNCENS]${NC}  uncensored fine-tune — no content restrictions"
     echo -e "    ${CYAN}★${NC}         recommended pick for that VRAM tier"
     echo ""
-    echo "  ┌────┬──────────────────────────────────────┬──────┬──────┬──────────────────────────┐"
-    echo "  │ #  │ Model                                │ Quant│ VRAM │ Capabilities             │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── TINY / CPU ────────────────────── │      │      │                          │"
-    echo "  │  1 │ Qwen3-1.7B                           │ Q8   │ CPU  │ ★ [TOOLS] [THINK]        │"
-    echo "  │  2 │ Qwen3-4B                             │ Q4   │ ~3GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  3 │ Phi-4-mini 3.8B    [tiny/strong]     │ Q4   │ CPU  │ ★ [TOOLS] [THINK]        │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │  4 │ Qwen3-0.6B                           │ Q8   │ CPU  │ [TOOLS] [THINK]  (tiny)  │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── 6-8 GB VRAM ───────────────────── │      │      │                          │"
-    echo "  │  5 │ Qwen3-8B                             │ Q4   │ ~5GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  6 │ Qwen3-8B                             │ Q6   │ ~6GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │  7 │ DeepSeek-R1-0528-Qwen3-8B            │ Q4   │ ~5GB │ ★ [THINK] top reasoning  │"
-    echo "  │  8 │ Gemma-3-9B                           │ Q4   │ ~6GB │ [TOOLS] Google           │"
-    echo "  │  9 │ Gemma-3-12B                          │ Q4   │ ~8GB │ [TOOLS] Google vision    │"
-    echo "  │ 10 │ Dolphin3.0-8B                        │ Q4   │ ~5GB │ [UNCENS]                 │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── 10-12 GB VRAM ─────────────────── │      │      │                          │"
-    echo "  │ 11 │ Phi-4-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] top coding+math│"
-    echo "  │ 12 │ Qwen3-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 13 │ DeepSeek-R1-Distill-Qwen-14B         │ Q4   │ ~9GB │ [THINK] deep reasoning   │"
-    echo "  │ 14 │ Gemma-3-27B (partial offload)        │ Q4   │~12GB │ [TOOLS] Google           │"
-    echo "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┤"
-    echo "  │    │ ── 16-24 GB VRAM ─────────────────── │      │      │                          │"
-    echo "  │ 15 │ Mistral-Small-3.1-24B                │ Q4   │~14GB │ [TOOLS] [THINK] 128K ctx │"
-    echo "  │ 16 │ Mistral-Small-3.2-24B                │ Q4   │~14GB │ ★ [TOOLS] [THINK] newest │"
-    echo "  │ 17 │ Qwen3-30B-A3B  (MoE ★fast)          │ Q4   │~16GB │ ★ [TOOLS] [THINK] MoE    │"
-    echo "  │ 18 │ Qwen3-32B                            │ Q4   │~19GB │ ★ [TOOLS] [THINK]        │"
-    echo "  │ 19 │ DeepSeek-R1-Distill-Qwen-32B         │ Q4   │~19GB │ [THINK] deep reasoning   │"
-    echo "  │ 20 │ Gemma-3-27B                          │ Q4   │~16GB │ [TOOLS] Google           │"
-    echo "  │    │ ── 48 GB VRAM ────────────────────── │      │      │                          │"
-    echo "  │ 21 │ Llama-3.3-70B                        │ Q4   │~40GB │ ★ [TOOLS] multi-GPU      │"
-    echo "  └────┴──────────────────────────────────────┴──────┴──────┴──────────────────────────┘"
+    # Dynamic table — green ✔ if GGUF already downloaded, space if not
+    _D="$GREEN✔$NC"   # installed marker
+    _X="  "           # not installed
+    printf "  ┌────┬──────────────────────────────────────┬──────┬──────┬──────────────────────────┬───┐\n"
+    printf "  │ #  │ Model                                │ Quant│ VRAM │ Capabilities             │Got│\n"
+    printf "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┼───┤\n"
+    printf "  │    │ ── TINY / CPU ────────────────────── │      │      │                          │   │\n"
+    printf "  │  1 │ Qwen3-1.7B                           │ Q8   │ CPU  │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark Qwen_Qwen3-1.7B-Q8_0.gguf)"
+    printf "  │  2 │ Qwen3-4B                             │ Q4   │ ~3GB │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark Qwen_Qwen3-4B-Q4_K_M.gguf)"
+    printf "  │  3 │ Phi-4-mini 3.8B                      │ Q4   │ CPU  │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark microsoft_Phi-4-mini-instruct-Q4_K_M.gguf)"
+    printf "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┼───┤\n"
+    printf "  │  4 │ Qwen3-0.6B                           │ Q8   │ CPU  │ [TOOLS] [THINK]  (tiny)  │%s │\n" "$(_mark Qwen_Qwen3-0.6B-Q8_0.gguf)"
+    printf "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┼───┤\n"
+    printf "  │    │ ── 6-8 GB VRAM ───────────────────── │      │      │                          │   │\n"
+    printf "  │  5 │ Qwen3-8B                             │ Q4   │ ~5GB │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark Qwen_Qwen3-8B-Q4_K_M.gguf)"
+    printf "  │  6 │ Qwen3-8B                             │ Q6   │ ~6GB │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark Qwen_Qwen3-8B-Q6_K.gguf)"
+    printf "  │  7 │ DeepSeek-R1-0528-Qwen3-8B            │ Q4   │ ~5GB │ ★ [THINK] top reasoning  │%s │\n" "$(_mark DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf)"
+    printf "  │  8 │ Gemma-3-9B                           │ Q4   │ ~6GB │ [TOOLS] Google           │%s │\n" "$(_mark google_gemma-3-9b-it-Q4_K_M.gguf)"
+    printf "  │  9 │ Gemma-3-12B                          │ Q4   │ ~8GB │ [TOOLS] Google vision    │%s │\n" "$(_mark google_gemma-3-12b-it-Q4_K_M.gguf)"
+    printf "  │ 10 │ Dolphin3.0-8B                        │ Q4   │ ~5GB │ [UNCENS]                 │%s │\n" "$(_mark Dolphin3.0-Mistral-7B-Q4_K_M.gguf)"
+    printf "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┼───┤\n"
+    printf "  │    │ ── 10-12 GB VRAM ─────────────────── │      │      │                          │   │\n"
+    printf "  │ 11 │ Phi-4-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] top coding+math│%s │\n" "$(_mark Phi-4-Q4_K_M.gguf)"
+    printf "  │ 12 │ Qwen3-14B                            │ Q4   │ ~9GB │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark Qwen_Qwen3-14B-Q4_K_M.gguf)"
+    printf "  │ 13 │ DeepSeek-R1-Distill-Qwen-14B         │ Q4   │ ~9GB │ [THINK] deep reasoning   │%s │\n" "$(_mark DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf)"
+    printf "  │ 14 │ Gemma-3-27B (partial offload)        │ Q4   │~12GB │ [TOOLS] Google           │%s │\n" "$(_mark google_gemma-3-27b-it-Q4_K_M.gguf)"
+    printf "  ├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┼───┤\n"
+    printf "  │    │ ── 16-24 GB VRAM ─────────────────── │      │      │                          │   │\n"
+    printf "  │ 15 │ Mistral-Small-3.1-24B                │ Q4   │~14GB │ [TOOLS] [THINK] 128K ctx │%s │\n" "$(_mark Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf)"
+    printf "  │ 16 │ Mistral-Small-3.2-24B                │ Q4   │~14GB │ ★ [TOOLS] [THINK] newest │%s │\n" "$(_mark Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf)"
+    printf "  │ 17 │ Qwen3-30B-A3B  (MoE ★fast)          │ Q4   │~16GB │ ★ [TOOLS] [THINK] MoE    │%s │\n" "$(_mark Qwen3-30B-A3B-Q4_K_M.gguf)"
+    printf "  │ 18 │ Qwen3-32B                            │ Q4   │~19GB │ ★ [TOOLS] [THINK]        │%s │\n" "$(_mark Qwen_Qwen3-32B-Q4_K_M.gguf)"
+    printf "  │ 19 │ DeepSeek-R1-Distill-Qwen-32B         │ Q4   │~19GB │ [THINK] deep reasoning   │%s │\n" "$(_mark DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf)"
+    printf "  │ 20 │ Gemma-3-27B                          │ Q4   │~16GB │ [TOOLS] Google           │%s │\n" "$(_mark google_gemma-3-27b-it-Q4_K_M.gguf)"
+    printf "  │    │ ── 48 GB VRAM ────────────────────── │      │      │                          │   │\n"
+    printf "  │ 21 │ Llama-3.3-70B                        │ Q4   │~40GB │ ★ [TOOLS] multi-GPU      │%s │\n" "$(_mark Llama-3.3-70B-Instruct-Q4_K_M.gguf)"
+    printf "  └────┴──────────────────────────────────────┴──────┴──────┴──────────────────────────┴───┘\n"
+    echo -e "  ${GREEN}✔ = already downloaded${NC}"
     echo ""
     echo -e "  ${YELLOW}MoE note (17):${NC} 30B total params, only 3B active per token → 30B quality, 8B speed."
     echo -e "  ${YELLOW}R1-0528 (7):${NC}  Updated May 2025 distill — significantly improved reasoning over original R1."
@@ -633,8 +700,8 @@ if ! ask_yes_no "Proceed with this configuration?"; then
             M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
             M[size_gb]=3;  M[layers]=36; M[tier]="4B" ;;
         3)  M[name]="Phi-4-mini Q4_K_M";                          M[caps]="TOOLS + THINK"
-            M[file]="phi-4-mini-instruct-Q4_K_M.gguf"
-            M[url]="https://huggingface.co/bartowski/phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf"
+            M[file]="microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
             M[size_gb]=3;  M[layers]=32; M[tier]="3.8B" ;;
         4)  M[name]="Qwen3-0.6B Q8_0";                            M[caps]="TOOLS + THINK"
             M[file]="Qwen_Qwen3-0.6B-Q8_0.gguf"
@@ -849,6 +916,8 @@ info "System dependencies OK."
 # =============================================================================
 step "Directories"
 mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" "$BIN_DIR" "$CONFIG_DIR" "$GUI_DIR"
+mkdir -p "$HOME/work"
+info "Coworking workspace: $HOME/work  (use: cd ~/work)"
 info "Directories ready."
 
 # PATH: $BIN_DIR baked in now; \$PATH expands when .bashrc is sourced.
@@ -1650,7 +1719,7 @@ echo "════════════════════════�
 # hf_path = repo/resolve/main/filename (after bartowski/)
 declare -a _CATALOG=(
     "Qwen3-1.7B|Q8_0|0|TOOLS+THINK|2|28|Qwen_Qwen3-1.7B-Q8_0.gguf|Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
-    "Phi-4-mini 3.8B|Q4_K_M|0|TOOLS+THINK|3|32|phi-4-mini-instruct-Q4_K_M.gguf|phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf"
+    "Phi-4-mini 3.8B|Q4_K_M|0|TOOLS+THINK|3|32|microsoft_Phi-4-mini-instruct-Q4_K_M.gguf|microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
     "Qwen3-4B|Q4_K_M|3|TOOLS+THINK|3|36|Qwen_Qwen3-4B-Q4_K_M.gguf|Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
     "Qwen3-8B|Q4_K_M|5|TOOLS+THINK|5|36|Qwen_Qwen3-8B-Q4_K_M.gguf|Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
     "Qwen3-8B|Q6_K|6|TOOLS+THINK|6|36|Qwen_Qwen3-8B-Q6_K.gguf|Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
@@ -2656,17 +2725,16 @@ fi
 printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "5" "neofetch" "system info banner + fastfetch"
 printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "6" "Open WebUI" "full browser chat UI with auth + history (~500 MB pip install)"
 echo ""
-echo -e "  ${CYAN}── AI Pentest / Red-team tools (require Docker) ─────────────────${NC}"
-printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "7" "PentestAgent" "TUI pentest agent — LiteLLM, MCP, playbooks (Python)"
-printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "8" "PentAGI" "Full-stack pentest web UI — Ollama compatible (Docker)"
-printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "9" "RedAmon" "Agentic red-team framework — Kali sandbox (Docker)"
+echo -e "  ${CYAN}── AI coding agents ──────────────────────────────────────────────${NC}"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "7" "Claude Code" "Anthropic CLI agent — codes, edits, runs commands"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "8" "OpenAI Codex" "OpenAI CLI coding agent"
 echo ""
 if [[ -t 0 ]]; then
     read -r -p "  > " _tool_sel
 else
     _tool_sel=""
 fi
-[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6 7 8 9"
+[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6 7 8"
 
 # ── 1: tmux ───────────────────────────────────────────────────────────────────
 if [[ "${_tool_sel:-}" == *"1"* ]]; then
@@ -2759,8 +2827,11 @@ if [[ "${_tool_sel:-}" == *"5"* ]]; then
 fi
 
 # ── 6: Open WebUI ─────────────────────────────────────────────────────────────
+# Always write the launcher script so the 'webui' alias never says "not found"
+if is_wsl2; then _OWUI_HOST="0.0.0.0"; else _OWUI_HOST="127.0.0.1"; fi
+OWUI_VENV="$HOME/.local/share/open-webui-venv"
+
 if [[ "${_tool_sel:-}" == *"6"* ]]; then
-    OWUI_VENV="$HOME/.local/share/open-webui-venv"
     info "Installing Open WebUI (browser-based full-stack chat UI, ~500 MB)…"
     [[ ! -d "$OWUI_VENV" ]] && "${PYTHON_BIN:-python3}" -m venv "$OWUI_VENV"
     "$OWUI_VENV/bin/pip" install --upgrade pip --quiet || true
@@ -2768,29 +2839,47 @@ if [[ "${_tool_sel:-}" == *"6"* ]]; then
         || { warn "Open WebUI pip install failed — check output above."; }
     OWUI_VER=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "unknown")
     info "Open WebUI $OWUI_VER installed."
+fi
 
-    if is_wsl2; then OWUI_HOST="0.0.0.0"; else OWUI_HOST="127.0.0.1"; fi
-
-    cat > "$BIN_DIR/llm-webui-alt" <<OWUI_ALT_LAUNCHER
+cat > "$BIN_DIR/llm-webui-alt" <<OWUI_ALT_LAUNCHER
 #!/usr/bin/env bash
 # llm-webui-alt — Open WebUI browser interface
+OWUI_VENV="$HOME/.local/share/open-webui-venv"
+
+# Guard: print helpful message if Open WebUI isn't installed
+if [[ ! -x "$OWUI_VENV/bin/open-webui" ]]; then
+    echo ""
+    echo "  Open WebUI is not installed yet."
+    echo "  Run: llm-setup  →  then select option 6 (Open WebUI)"
+    echo ""
+    exit 1
+fi
+
 export DATA_DIR="$GUI_DIR/open-webui-data"
 mkdir -p "\$DATA_DIR"
 
 # ── Ollama connection ─────────────────────────────────────────────────
+# Use the Ollama API endpoint — must match what Ollama listens on
 export OLLAMA_BASE_URL="http://127.0.0.1:11434"
 
-# ── Streaming fix: increase timeouts so large model responses complete ─
-# Default aiohttp timeout is 300s — long outputs on slow GPUs can exceed
-# this, causing the UI to hang at 100% GPU with no text appearing.
+# ── Streaming fix ─────────────────────────────────────────────────────
+# Open WebUI uses aiohttp; default 300s timeout causes blank output on
+# slow GPUs. Raise all timeouts to 15 min for large model responses.
 export AIOHTTP_CLIENT_TIMEOUT=900
 export AIOHTTP_CLIENT_TIMEOUT_TOTAL=900
 export OLLAMA_REQUEST_TIMEOUT=900
 
-# ── Auth + CORS: open for local-only use ─────────────────────────────
+# ── Auth: disabled for local single-user use ──────────────────────────
 export WEBUI_AUTH=false
+export ENABLE_LOGIN_FORM=false
 export ENABLE_SIGNUP=false
+export DEFAULT_USER_ROLE=admin
 export CORS_ALLOW_ORIGIN="*"
+# ── Ollama API: enable it explicitly so model list appears ────────────
+export ENABLE_OLLAMA_API=true
+export OLLAMA_API_BASE_URL="http://127.0.0.1:11434"
+# ── Connection timeout: raise for large models ────────────────────────
+export OLLAMA_CLIENT_TIMEOUT=900
 
 export PYTHONWARNINGS="ignore::RuntimeWarning"
 
@@ -2818,272 +2907,125 @@ _stale=\$(ss -lptn 'sport = :8080' 2>/dev/null | awk 'NR>1{match(\$NF,/pid=([0-9
 echo "→ Open WebUI starting on http://localhost:8080"
 echo "  If output hangs: ensure Ollama is running and the model is pulled."
 echo "  Press Ctrl+C to stop."
-"$OWUI_VENV/bin/open-webui" serve --host $OWUI_HOST --port 8080
+"$OWUI_VENV/bin/open-webui" serve --host $_OWUI_HOST --port 8080
 OWUI_ALT_LAUNCHER
-    chmod +x "$BIN_DIR/llm-webui-alt"
-    # Expose via alias webui-alt
-    grep -q "llm-webui-alt" "$HOME/.local_llm_aliases" 2>/dev/null \
-        || echo "alias webui-alt='llm-webui-alt'" >> "$HOME/.local_llm_aliases"
-    info "Open WebUI installed → run: webui-alt (http://localhost:8080)"
+chmod +x "$BIN_DIR/llm-webui-alt"
+grep -q "llm-webui-alt" "$HOME/.local_llm_aliases" 2>/dev/null     || echo "alias webui-alt='\$HOME/.local/bin/llm-webui-alt'" >> "$HOME/.local_llm_aliases"
+
+if [[ "${_tool_sel:-}" == *"6"* ]]; then
+    info "Open WebUI installed → run: webui  (http://localhost:8080)"
 fi
 
-# ── 7: PentestAgent ───────────────────────────────────────────────────────────
+# ── 7: Claude Code ───────────────────────────────────────────────────────────
 if [[ "${_tool_sel:-}" == *"7"* ]]; then
-    step "PentestAgent (AI pentest TUI)"
-    PTAGENT_DIR="$HOME/pentest/pentestagent"
-    PTAGENT_VENV="$HOME/.local/share/pentestagent-venv"
+    step "Claude Code (Anthropic CLI coding agent)"
 
-    # Deps: git, python3.10+, playwright chromium
-    sudo apt-get install -y git python3-dev build-essential 2>/dev/null || true
-
-    # Clone / update
-    if [[ -d "$PTAGENT_DIR/.git" ]]; then
-        info "PentestAgent: pulling updates…"
-        git -C "$PTAGENT_DIR" pull --ff-only || warn "git pull failed — using existing clone."
-    else
-        mkdir -p "$(dirname "$PTAGENT_DIR")"
-        git clone https://github.com/GH05TCREW/pentestagent.git "$PTAGENT_DIR" \
-            || { warn "PentestAgent clone failed — check internet access."; }
+    # Ensure Node.js >= 18 is available
+    _node_ok=0
+    if command -v node &>/dev/null; then
+        _nver=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
+        (( _nver >= 18 )) && _node_ok=1
+    fi
+    if [[ $_node_ok -eq 0 ]]; then
+        info "Installing Node.js 20 LTS…"
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -             && sudo apt-get install -y nodejs             && _node_ok=1             || warn "Node.js install failed — Claude Code requires Node >= 18."
     fi
 
-    if [[ -d "$PTAGENT_DIR" ]]; then
-        # Create dedicated venv
-        "${PYTHON_BIN:-python3}" -m venv "$PTAGENT_VENV"
-        "$PTAGENT_VENV/bin/pip" install --upgrade pip --quiet
-        "$PTAGENT_VENV/bin/pip" install -e "$PTAGENT_DIR[all]" \
-            || { warn "PentestAgent pip install failed."; }
-        # Playwright chromium (headless browser tool)
-        "$PTAGENT_VENV/bin/playwright" install chromium 2>/dev/null \
-            || warn "playwright chromium install failed — browser tool won't work."
+    if [[ $_node_ok -eq 1 ]]; then
+        sudo npm install -g @anthropic-ai/claude-code             && info "Claude Code installed → run: claude"             || warn "Claude Code install failed."
 
-        # Write .env template if not present
-        if [[ ! -f "$PTAGENT_DIR/.env" ]]; then
-            cat > "$PTAGENT_DIR/.env" <<'PTAGENT_ENV'
-# PentestAgent configuration
-# Use Ollama local model (no cloud key needed):
-PENTESTAGENT_MODEL=ollama/mistral
-# Or cloud providers:
-# ANTHROPIC_API_KEY=sk-ant-...
-# PENTESTAGENT_MODEL=claude-sonnet-4-20250514
-# OPENAI_API_KEY=sk-...
-# PENTESTAGENT_MODEL=gpt-4o
-# Optional: web search via Tavily
-# TAVILY_API_KEY=tvly-...
-PTAGENT_ENV
-            info "PentestAgent: .env template written → $PTAGENT_DIR/.env"
-        fi
-
-        # Launcher script
-        cat > "$BIN_DIR/pentestagent" <<PTAGENT_LAUNCHER
+        # Write a wrapper that reminds about the API key and sets work dir
+        cat > "$BIN_DIR/claude-code" <<'CC_EOF'
 #!/usr/bin/env bash
-# pentestagent — AI pentest TUI (PentestAgent by GH05TCREW)
-cd "$PTAGENT_DIR"
-source "$PTAGENT_VENV/bin/activate"
-exec pentestagent "\$@"
-PTAGENT_LAUNCHER
-        chmod +x "$BIN_DIR/pentestagent"
-        grep -q "pentestagent" "$ALIAS_FILE" 2>/dev/null \
-            || echo "alias pentest='pentestagent'" >> "$ALIAS_FILE"
-        info "PentestAgent installed → run: pentestagent  (or: pentest)"
-        info "  Config: $PTAGENT_DIR/.env"
-        info "  Docs:   https://github.com/GH05TCREW/pentestagent"
+# claude-code — Anthropic Claude Code CLI agent wrapper
+WORK_DIR="$HOME/work"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
+
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║  ANTHROPIC_API_KEY not set.                         ║"
+    echo "  ║  Get a key: https://console.anthropic.com/          ║"
+    echo "  ║  Then run:  export ANTHROPIC_API_KEY=sk-ant-...     ║"
+    echo "  ║  Or add it to ~/.bashrc for persistence.            ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo ""
+    read -r -p "  Enter ANTHROPIC_API_KEY now (or press Enter to exit): " _key
+    [[ -z "$_key" ]] && exit 1
+    export ANTHROPIC_API_KEY="$_key"
+fi
+
+echo "  Working dir: $PWD"
+exec claude "$@"
+CC_EOF
+        chmod +x "$BIN_DIR/claude-code"
+        grep -q "claude-code" "$ALIAS_FILE" 2>/dev/null             || echo "alias claude-code='claude-code'" >> "$ALIAS_FILE"
+        info "Claude Code → run: claude  (or: claude-code)"
+        info "  Set key: export ANTHROPIC_API_KEY=sk-ant-..."
+        info "  Docs: https://docs.anthropic.com/en/docs/claude-code"
+    else
+        warn "Claude Code skipped — Node.js >= 18 required."
     fi
 fi
 
-# ── 8: PentAGI ────────────────────────────────────────────────────────────────
+# ── 8: OpenAI Codex ───────────────────────────────────────────────────────────
 if [[ "${_tool_sel:-}" == *"8"* ]]; then
-    step "PentAGI (full-stack AI pentest web UI)"
-    PENTAGI_DIR="$HOME/pentest/pentagi"
+    step "OpenAI Codex CLI coding agent"
 
-    # Ensure Docker is available
-    if ! command -v docker &>/dev/null; then
-        warn "Docker not found — installing Docker Engine…"
-        curl -fsSL https://get.docker.com | sudo sh \
-            && sudo usermod -aG docker "$USER" \
-            && info "Docker installed. Re-login or run: newgrp docker" \
-            || { warn "Docker install failed — install manually: https://docs.docker.com/engine/install/"; }
+    # Ensure Node.js >= 22 is available (Codex requires 22+)
+    _node_ok=0
+    if command -v node &>/dev/null; then
+        _nver=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
+        (( _nver >= 22 )) && _node_ok=1
     fi
-    if ! command -v docker &>/dev/null; then
-        warn "PentAGI skipped — Docker unavailable."; 
-    else
-        mkdir -p "$PENTAGI_DIR"
-        # Download docker-compose.yml from official source
-        if [[ ! -f "$PENTAGI_DIR/docker-compose.yml" ]]; then
-            curl -fsSL \
-                https://raw.githubusercontent.com/vxcontrol/pentagi/master/docker-compose.yml \
-                -o "$PENTAGI_DIR/docker-compose.yml" \
-                || { warn "PentAGI: failed to download docker-compose.yml"; }
-        fi
-        # Write .env template if not present
-        if [[ ! -f "$PENTAGI_DIR/.env" ]]; then
-            curl -fsSL \
-                https://raw.githubusercontent.com/vxcontrol/pentagi/master/.env.example \
-                -o "$PENTAGI_DIR/.env" 2>/dev/null \
-                || cat > "$PENTAGI_DIR/.env" <<'PENTAGI_ENV'
-# PentAGI configuration — fill in at least one LLM provider key
-# Local (free):
-OLLAMA_SERVER_URL=http://host.docker.internal:11434
-OLLAMA_SERVER_MODEL=qwen3:8b
-OLLAMA_SERVER_PULL_MODELS_ENABLED=false
-OLLAMA_SERVER_LOAD_MODELS_ENABLED=false
-# Cloud providers (optional — at least one needed):
-# OPEN_AI_KEY=
-# ANTHROPIC_API_KEY=
-# GEMINI_API_KEY=
-# Default admin credentials (change these!):
-PENTAGI_POSTGRES_USER=pentagi
-PENTAGI_POSTGRES_PASSWORD=changeme_db
-COOKIE_SIGNING_SALT=changeme_salt_32chars_minimum_here
-PUBLIC_URL=https://localhost:8443
-CORS_ORIGINS=https://localhost:8443
-# Free search (enabled by default):
-DUCKDUCKGO_ENABLED=true
-SPLOITUS_ENABLED=true
-PENTAGI_ENV
-            info "PentAGI: .env template written → $PENTAGI_DIR/.env"
-        fi
+    if [[ $_node_ok -eq 0 ]]; then
+        info "Installing Node.js 22 LTS (required for OpenAI Codex)…"
+        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -             && sudo apt-get install -y nodejs             && _node_ok=1             || warn "Node.js install failed — OpenAI Codex requires Node >= 22."
+    fi
 
-        # Launcher / management script
-        cat > "$BIN_DIR/pentagi" <<PENTAGI_LAUNCHER
+    if [[ $_node_ok -eq 1 ]]; then
+        sudo npm install -g @openai/codex             && info "OpenAI Codex installed → run: codex"             || warn "OpenAI Codex install failed."
+
+        # Write a wrapper
+        cat > "$BIN_DIR/codex" <<'CODEX_EOF'
 #!/usr/bin/env bash
-# pentagi — PentAGI docker-compose manager
-PENTAGI_DIR="$PENTAGI_DIR"
-case "\${1:-start}" in
-    start|up)
-        echo "Starting PentAGI…"
-        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" --env-file "\$PENTAGI_DIR/.env" up -d
-        echo "→ UI: https://localhost:8443  (default: admin@pentagi.com / admin)"
-        ;;
-    stop|down)
-        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" down
-        ;;
-    logs)
-        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" logs -f "\${2:-pentagi}"
-        ;;
-    pull)
-        docker compose -f "\$PENTAGI_DIR/docker-compose.yml" pull
-        ;;
-    *)
-        echo "Usage: pentagi {start|stop|logs|pull}"
-        ;;
-esac
-PENTAGI_LAUNCHER
-        chmod +x "$BIN_DIR/pentagi"
-        grep -q "alias pentagi" "$ALIAS_FILE" 2>/dev/null \
-            || echo "alias pentagi='pentagi'" >> "$ALIAS_FILE"
-        info "PentAGI installed → run: pentagi start"
-        info "  Config: $PENTAGI_DIR/.env  (set LLM keys before first start)"
-        info "  UI:     https://localhost:8443  (first start pulls ~2 GB images)"
-        info "  Ollama: OLLAMA_SERVER_URL=http://host.docker.internal:11434"
-        info "  Docs:   https://github.com/vxcontrol/pentagi"
-    fi
+# codex — OpenAI Codex CLI agent wrapper
+WORK_DIR="$HOME/work"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
+
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    echo ""
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║  OPENAI_API_KEY not set.                            ║"
+    echo "  ║  Get a key: https://platform.openai.com/api-keys   ║"
+    echo "  ║  Then run:  export OPENAI_API_KEY=sk-...           ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo ""
+    read -r -p "  Enter OPENAI_API_KEY now (or press Enter to exit): " _key
+    [[ -z "$_key" ]] && exit 1
+    export OPENAI_API_KEY="$_key"
 fi
 
-# ── 9: RedAmon ────────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"9"* ]]; then
-    step "RedAmon (agentic red-team framework)"
-    REDAMON_DIR="$HOME/pentest/redamon"
-
-    # Ensure Docker is available
-    if ! command -v docker &>/dev/null; then
-        warn "Docker not found — installing Docker Engine…"
-        curl -fsSL https://get.docker.com | sudo sh \
-            && sudo usermod -aG docker "$USER" \
-            && info "Docker installed. Re-login or run: newgrp docker" \
-            || { warn "Docker install failed — install manually: https://docs.docker.com/engine/install/"; }
-    fi
-    if ! command -v docker &>/dev/null; then
-        warn "RedAmon skipped — Docker unavailable."
+echo "  Working dir: $PWD"
+exec codex "$@"
+CODEX_EOF
+        chmod +x "$BIN_DIR/codex"
+        grep -q "alias codex" "$ALIAS_FILE" 2>/dev/null             || echo "alias codex='codex'" >> "$ALIAS_FILE"
+        info "OpenAI Codex → run: codex"
+        info "  Set key: export OPENAI_API_KEY=sk-..."
+        info "  Docs: https://github.com/openai/codex"
     else
-        # Clone / update
-        if [[ -d "$REDAMON_DIR/.git" ]]; then
-            info "RedAmon: pulling updates…"
-            git -C "$REDAMON_DIR" pull --ff-only || warn "git pull failed — using existing clone."
-        else
-            mkdir -p "$(dirname "$REDAMON_DIR")"
-            git clone https://github.com/samugit83/redamon.git "$REDAMON_DIR" \
-                || { warn "RedAmon clone failed — check internet access."; }
-        fi
-
-        if [[ -d "$REDAMON_DIR" ]]; then
-            # Write .env from example if not present
-            if [[ ! -f "$REDAMON_DIR/.env" ]]; then
-                if [[ -f "$REDAMON_DIR/.env.example" ]]; then
-                    cp "$REDAMON_DIR/.env.example" "$REDAMON_DIR/.env"
-                else
-                    cat > "$REDAMON_DIR/.env" <<'REDAMON_ENV'
-# RedAmon configuration — fill in at least one LLM provider key
-# Recommended (most capable):
-ANTHROPIC_API_KEY=sk-ant-...
-# Or OpenAI:
-# OPENAI_API_KEY=sk-proj-...
-# Local Ollama (OpenAI-compatible endpoint):
-# OPENAI_COMPAT_BASE_URL=http://host.docker.internal:11434/v1
-# OPENAI_COMPAT_API_KEY=
-# Optional extras:
-# TAVILY_API_KEY=tvly-...   # web search
-# NVD_API_KEY=...            # faster CVE lookups
-REDAMON_ENV
-                fi
-                info "RedAmon: .env written → $REDAMON_DIR/.env"
-            fi
-
-            # Launcher script
-            cat > "$BIN_DIR/redamon" <<REDAMON_LAUNCHER
-#!/usr/bin/env bash
-# redamon — RedAmon docker-compose manager
-REDAMON_DIR="$REDAMON_DIR"
-case "\${1:-start}" in
-    start|up)
-        echo "Building and starting RedAmon (first run builds Kali image — may take 10-20 min)…"
-        cd "\$REDAMON_DIR"
-        docker compose --profile tools build
-        docker compose up -d postgres neo4j recon-orchestrator kali-sandbox agent webapp
-        echo "→ UI: http://localhost:3000"
-        echo "  (to also start GVM/OpenVAS add: docker compose up -d)"
-        ;;
-    start-full)
-        echo "Starting RedAmon with GVM/OpenVAS (~30 min feed sync on first run)…"
-        cd "\$REDAMON_DIR"
-        docker compose --profile tools build
-        docker compose up -d
-        echo "→ UI: http://localhost:3000  (GVM feeds syncing in background)"
-        ;;
-    stop|down)
-        docker compose -f "\$REDAMON_DIR/docker-compose.yml" down
-        ;;
-    logs)
-        docker compose -f "\$REDAMON_DIR/docker-compose.yml" logs -f "\${2:-agent}"
-        ;;
-    pull)
-        git -C "\$REDAMON_DIR" pull --ff-only
-        ;;
-    *)
-        echo "Usage: redamon {start|start-full|stop|logs|pull}"
-        echo "  start       — core stack (no GVM)"
-        echo "  start-full  — full stack including GVM/OpenVAS"
-        ;;
-esac
-REDAMON_LAUNCHER
-            chmod +x "$BIN_DIR/redamon"
-            grep -q "alias redamon" "$ALIAS_FILE" 2>/dev/null \
-                || echo "alias redamon='redamon'" >> "$ALIAS_FILE"
-
-            # Ollama host fix: RedAmon containers need Ollama reachable on 0.0.0.0
-            info "RedAmon installed → run: redamon start"
-            info "  Config: $REDAMON_DIR/.env  (set at least one LLM key)"
-            info "  UI:     http://localhost:3000"
-            info "  Ollama: set OPENAI_COMPAT_BASE_URL=http://host.docker.internal:11434/v1"
-            info "    and ensure Ollama is bound to 0.0.0.0:"
-            info "    sudo mkdir -p /etc/systemd/system/ollama.service.d"
-            info "    echo -e '[Service]\\nEnvironment=\"OLLAMA_HOST=0.0.0.0\"' | sudo tee /etc/systemd/system/ollama.service.d/override.conf"
-            info "    sudo systemctl daemon-reload && sudo systemctl restart ollama"
-            info "  Docs: https://github.com/samugit83/redamon"
-        fi
+        warn "OpenAI Codex skipped — Node.js >= 22 required."
     fi
 fi
 
 [[ -n "${_tool_sel:-}" ]] && info "Optional tools step complete." || info "Optional tools: skipped." 
+
+# Create the coworking directory now so it exists even before first use
+mkdir -p "$HOME/work"
+info "Coworking workspace: $HOME/work"
 
 # =============================================================================
 # STEP 13b — AUTONOMOUS COWORKING (Open Interpreter + Aider)
@@ -3095,12 +3037,29 @@ AI_VENV="$HOME/.local/share/aider-venv"
 
 # ── Open Interpreter ──────────────────────────────────────────────────────
 info "Installing Open Interpreter…"
-    [[ ! -d "$OI_VENV" ]] && "${PYTHON_BIN:-python3}" -m venv "$OI_VENV"
-    "$OI_VENV/bin/pip" install --upgrade pip --quiet || true
-    # setuptools must be installed explicitly — Python 3.12 no longer bundles it
-    # in venvs, so open-interpreter's use of pkg_resources raises ModuleNotFoundError.
-    "$OI_VENV/bin/pip" install --upgrade setuptools --quiet         || warn "setuptools install failed — cowork may crash on Python 3.12."
+    # Python 3.12+ no longer ships pkg_resources in venvs. We always remove and
+    # rebuild the venv to ensure setuptools is present in the correct order.
+    if [[ -d "$OI_VENV" ]]; then
+        warn "Rebuilding Open Interpreter venv (ensures setuptools/pkg_resources OK)…"
+        rm -rf "$OI_VENV"
+    fi
+    "${PYTHON_BIN:-python3}" -m venv "$OI_VENV"
+    # Step 1: pip + setuptools FIRST — pkg_resources lives inside setuptools
+    "$OI_VENV/bin/pip" install --upgrade pip --quiet
+    "$OI_VENV/bin/pip" install --upgrade "setuptools>=70" "wheel" --quiet         || { warn "setuptools install failed."; }
+    # Verify pkg_resources is importable before installing OI
+    if ! "$OI_VENV/bin/python3" -c "import pkg_resources" 2>/dev/null; then
+        warn "pkg_resources still absent — trying pip install of setuptools with no-cache…"
+        "$OI_VENV/bin/pip" install --force-reinstall --no-cache-dir "setuptools>=70" --quiet || true
+    fi
+    # Step 2: open-interpreter itself
     "$OI_VENV/bin/pip" install open-interpreter         || warn "Open Interpreter install failed — check output above."
+    # Final health check
+    if ! "$OI_VENV/bin/python3" -c "import pkg_resources; import interpreter" 2>/dev/null; then
+        warn "Open Interpreter health check failed — cowork may not work correctly."
+    else
+        info "Open Interpreter OK (pkg_resources ✔)"
+    fi
 
     # Write cowork launcher — reads OLLAMA_TAG from config at runtime
     cat > "$BIN_DIR/cowork" <<'COWORK_EOF'
@@ -3108,6 +3067,11 @@ info "Installing Open Interpreter…"
 # cowork — autonomous AI coworker via Open Interpreter + local Ollama
 # The AI can run code, browse the web, manage files — fully local, no cloud.
 set -uo pipefail
+
+# Work directory — all cowork sessions land here by default
+WORK_DIR="$HOME/work"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
 
 OI_VENV="$HOME/.local/share/open-interpreter-venv"
 CONFIG="$HOME/.config/local-llm/selected_model.conf"
@@ -3160,7 +3124,7 @@ echo "  ╔═══════════════════════
 echo "  ║          🤖  AUTONOMOUS COWORKER                ║"
 echo "  ║  Model  : $OLLAMA_TAG"
 echo "  ║  Powered: Open Interpreter + Ollama (local)     ║"
-echo "  ║  The AI can run code, browse web, manage files  ║"
+echo "  ║  Working dir: ~/work                            ║"
 echo "  ║  Type 'exit' or Ctrl-D to quit                  ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo ""
@@ -3252,6 +3216,12 @@ export OLLAMA_API_BASE="http://127.0.0.1:11434"
     --model "ollama_chat/${OLLAMA_TAG}" \
     --no-auto-commits \
     --no-check-update \
+    --no-show-model-warnings \
+    --no-show-release-notes \
+    --analytics-disable \
+    --no-gitignore \
+    --no-fancy-input \
+    --stream \
     "$@"
 AIDER_EOF
 chmod +x "$BIN_DIR/aider"
@@ -3464,7 +3434,7 @@ alias ask='run-model'   # run-model reads config + passes prompt; gguf-run takes
 alias llm-status='local-models-info'
 alias llm-checker='llm-checker'
 alias chat='llm-chat'
-alias webui='llm-webui-alt'   # Open WebUI (optional install — run: setup → option 6)
+alias webui='$HOME/.local/bin/llm-webui-alt'   # Open WebUI
 alias ai='aider'
 alias llm-stop='llm-stop'
 alias llm-update='llm-update'
@@ -3481,13 +3451,16 @@ llm-quick-help() {
     echo -e "  ${C}+-----------------------------------------------------------------+${N}"
     echo -e "  ${C}|${N}  ${M}Chat${N}                                                           ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}chat${N}          Neural Terminal   → http://localhost:8090       ${C}|${N}"
-    echo -e "  ${C}|${N}   ${Y}webui${N}         Open WebUI (optional)  → http://localhost:8080   ${C}|${N}"
+    echo -e "  ${C}|${N}   ${Y}webui${N}         Open WebUI (opt 6)  → http://localhost:8080       ${C}|${N}"
     echo -e "  ${C}|${N}  ${M}Models${N}                                                         ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}run-model${N}     run default GGUF from CLI                       ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}ollama-run${N}    run any Ollama model  (ollama-run <tag>)         ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-add${N}       download more models (hardware-filtered)        ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}llm-switch${N}    change active model                             ${C}|${N}"
-    echo -e "  ${C}|${N}  ${M}Coworking${N}                                                      ${C}|${N}"
+    echo -e "  ${C}|${N}  ${M}AI Agents (cloud)${N}                                              ${C}|${N}
+  ${C}|${N}   ${Y}claude${N}        Claude Code  (opt 7, ANTHROPIC_API_KEY needed)   ${C}|${N}
+  ${C}|${N}   ${Y}codex${N}         OpenAI Codex (opt 8, OPENAI_API_KEY needed)      ${C}|${N}
+  ${C}|${N}  ${M}Coworking${N}                                                      ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}cowork${N}        AI writes & runs code, edits files              ${C}|${N}"
     echo -e "  ${C}|${N}   ${Y}ai / aider${N}    AI pair programmer with git integration         ${C}|${N}"
     echo -e "  ${C}|${N}  ${M}System${N}                                                         ${C}|${N}"
@@ -3772,21 +3745,16 @@ echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-stop${NC}      Stop Ollama backend    
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-update${NC}    Upgrade Ollama + WebUI + re-pull active model    ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}   ${YELLOW}llm-switch${NC}    Change model (no reinstall needed)              ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
-echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Pentest / Red-team (optional tools 7-9) ─────────────────${NC}  ${CYAN}│${NC}"
-if [[ -x "$BIN_DIR/pentestagent" ]]; then
-echo -e "  ${CYAN}│${NC}   ${YELLOW}pentestagent${NC}  AI pentest TUI  (pentest)                       ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}  ${MAGENTA}── AI Coding Agents ────────────────────────────────────────${NC}  ${CYAN}│${NC}"
+if command -v claude &>/dev/null; then
+echo -e "  ${CYAN}│${NC}   ${YELLOW}claude${NC}        Claude Code AI agent  (cloud — needs API key)  ${CYAN}│${NC}"
 else
-echo -e "  ${CYAN}│${NC}   ${YELLOW}pentestagent${NC}  ${GREEN}(opt 7 — re-run setup to add)${NC}               ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}claude${NC}        ${GREEN}(opt 7 — re-run setup to add Claude Code)${NC}   ${CYAN}│${NC}"
 fi
-if [[ -x "$BIN_DIR/pentagi" ]]; then
-echo -e "  ${CYAN}│${NC}   ${YELLOW}pentagi${NC}       Full-stack pentest UI → https://localhost:8443  ${CYAN}│${NC}"
+if command -v codex &>/dev/null; then
+echo -e "  ${CYAN}│${NC}   ${YELLOW}codex${NC}         OpenAI Codex agent  (cloud — needs API key)    ${CYAN}│${NC}"
 else
-echo -e "  ${CYAN}│${NC}   ${YELLOW}pentagi${NC}       ${GREEN}(opt 8 — re-run setup to add)${NC}               ${CYAN}│${NC}"
-fi
-if [[ -x "$BIN_DIR/redamon" ]]; then
-echo -e "  ${CYAN}│${NC}   ${YELLOW}redamon${NC}       Agentic red-team → http://localhost:3000        ${CYAN}│${NC}"
-else
-echo -e "  ${CYAN}│${NC}   ${YELLOW}redamon${NC}       ${GREEN}(opt 9 — re-run setup to add)${NC}               ${CYAN}│${NC}"
+echo -e "  ${CYAN}│${NC}   ${YELLOW}codex${NC}         ${GREEN}(opt 8 — re-run setup to add OpenAI Codex)${NC}  ${CYAN}│${NC}"
 fi
 echo -e "  ${CYAN}│${NC}                                                                ${CYAN}│${NC}"
 echo -e "  ${CYAN}│${NC}  ${MAGENTA}── Help ─────────────────────────────────────────────────────${NC}  ${CYAN}│${NC}"
@@ -3808,7 +3776,7 @@ echo -e "${GREEN}  ║   Same window. Same directory. Zero friction.            
 echo -e "${GREEN}  ╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}Then:${NC}"
-echo -e "    ${YELLOW}chat${NC}       → Neural Terminal  http://localhost:8090"
+echo -e "    ${YELLOW}chat${NC}       → Neural Terminal  http://localhost:8090   |  ${YELLOW}webui${NC} → http://localhost:8080"
 echo -e "    ${YELLOW}cowork${NC}     → autonomous coding AI (runs code, edits files)"
 echo -e "    ${YELLOW}ai${NC}         → aider AI pair programmer (git-integrated)"
 echo -e "    ${YELLOW}run-model${NC}  → quick CLI inference from terminal"
