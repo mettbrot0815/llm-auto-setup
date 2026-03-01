@@ -51,34 +51,147 @@ PKG_CACHE_DIR="$HOME/.cache/llm-setup"
 mkdir -p "$PKG_CACHE_DIR/pip" "$PKG_CACHE_DIR/npm" "$PKG_CACHE_DIR/apt"
 export PIP_CACHE_DIR="$PKG_CACHE_DIR/pip"
 export npm_config_cache="$PKG_CACHE_DIR/npm"
+export DEBIAN_FRONTEND=noninteractive
+export APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 
 # =============================================================================
-# COLORS  (auto-disabled when stdout is not a tty)
+# COLORS & INSTALLER THEME  (auto-disabled when stdout is not a tty)
 # =============================================================================
 if [[ -t 1 ]]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'; NC='\033[0m'
+    RED='\033[0;31m';    GREEN='\033[0;32m';   YELLOW='\033[1;33m'
+    BLUE='\033[0;34m';   CYAN='\033[0;36m';    MAGENTA='\033[0;35m'
+    BOLD='\033[1m';      DIM='\033[2m';         NC='\033[0m'
+    # Installer palette
+    ACCENT='\033[38;5;39m'     # bright sky-blue  — primary highlight
+    ACCENT2='\033[38;5;82m'    # bright green     — success / ok
+    MUTED='\033[38;5;240m'     # mid-grey         — secondary text
+    WARN_COL='\033[38;5;214m'  # amber            — warnings
+    ERR_COL='\033[38;5;196m'   # red              — errors
+    STEP_COL='\033[38;5;105m'  # purple           — step headers
 else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; MAGENTA=''; NC=''
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; MAGENTA=''
+    BOLD=''; DIM=''; NC=''
+    ACCENT=''; ACCENT2=''; MUTED=''; WARN_COL=''; ERR_COL=''; STEP_COL=''
 fi
 
+# Terminal width (clamped 60-120)
+_TW=$(( $(tput cols 2>/dev/null || echo 80) ))
+(( _TW < 60  )) && _TW=60
+(( _TW > 120 )) && _TW=120
+
+# Print a horizontal rule using a given char and color
+_rule() { local ch="${1:-─}" col="${2:-$MUTED}"; printf "${col}%*s${NC}\n" "$_TW" | tr ' ' "$ch"; }
+
 # =============================================================================
-# LOGGING
+# LOGGING & INSTALLER UI
 # =============================================================================
 mkdir -p "$(dirname "$LOG_FILE")"
+# Tee to log but keep installer UI clean on stdout
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-log()       { echo -e "$(date +'%Y-%m-%d %H:%M:%S') $*"; }
-info()      { log "${GREEN}[INFO]${NC}  $*"; }
-warn()      { log "${YELLOW}[WARN]${NC}  $*"; }
-error()     { log "${RED}[ERROR]${NC} $*"; log "${RED}[ERROR]${NC} Log: $LOG_FILE"; exit 1; }
-step()      {
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}  ▶  $*${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# Step counter
+_STEP_N=0
+_STEP_TOTAL=17   # total steps (update if steps are added/removed)
+
+# ── Core printers ─────────────────────────────────────────────────────────────
+log()   { echo -e "$(date +'%Y-%m-%d %H:%M:%S') $*"; }
+
+info()  {
+    echo -e "  ${ACCENT2}✓${NC}  $*"
 }
-highlight() { echo -e "\n${MAGENTA}  ◆  $*${NC}"; }
+warn()  {
+    echo -e "  ${WARN_COL}⚠${NC}  ${WARN_COL}$*${NC}"
+    log "${WARN_COL}[WARN]${NC}  $*"
+}
+error() {
+    echo ""
+    _rule "═" "${ERR_COL}"
+    echo -e "  ${ERR_COL}${BOLD}✗  ERROR${NC}  $*"
+    echo -e "  ${MUTED}Log: $LOG_FILE${NC}"
+    _rule "═" "${ERR_COL}"
+    echo ""
+    log "${ERR_COL}[ERROR]${NC} $*"
+    exit 1
+}
+
+# ── Step header ────────────────────────────────────────────────────────────────
+step() {
+    (( _STEP_N++ )) || true
+    local label="$*"
+    local left="  STEP ${_STEP_N}/${_STEP_TOTAL}  │  ${label}"
+    echo ""
+    _rule "─" "${STEP_COL}"
+    echo -e "${STEP_COL}${BOLD}${left}${NC}"
+    _rule "─" "${STEP_COL}"
+}
+
+# ── Spinner for long-running silent ops ───────────────────────────────────────
+# Usage: spin_start "message"; <command>; spin_stop $?
+_SPIN_PID=""
+spin_start() {
+    local msg="${1:-Working…}"
+    # Only spin when stdout is a tty
+    if [[ -t 1 ]]; then
+        (
+            local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+            local i=0
+            while true; do
+                printf "\r  ${ACCENT}%s${NC}  %s " "${frames[$((i % 10))]}" "$msg"
+                (( i++ ))
+                sleep 0.08
+            done
+        ) &
+        _SPIN_PID=$!
+    else
+        echo -e "  …  $msg"
+        _SPIN_PID=""
+    fi
+}
+spin_stop() {
+    local rc="${1:-0}"
+    if [[ -n "${_SPIN_PID:-}" ]]; then
+        kill "$_SPIN_PID" 2>/dev/null
+        wait "$_SPIN_PID" 2>/dev/null
+        _SPIN_PID=""
+        printf "\r%*s\r" "$_TW" ""   # erase spinner line
+    fi
+    if (( rc == 0 )); then
+        echo -e "  ${ACCENT2}✓${NC}  Done"
+    else
+        echo -e "  ${WARN_COL}⚠${NC}  Finished with warnings (rc=$rc)"
+    fi
+    return "$rc"
+}
+
+highlight() { echo -e "\n${BOLD}${ACCENT}  ◆  $*${NC}"; }
+
+# ── Welcome banner ─────────────────────────────────────────────────────────────
+_print_welcome() {
+    clear 2>/dev/null || true
+    echo ""
+    echo -e "${ACCENT}${BOLD}"
+    echo "  ██╗      ██████╗  ██████╗ █████╗ ██╗         ██╗     ██╗     ███╗   ███╗"
+    echo "  ██║     ██╔═══██╗██╔════╝██╔══██╗██║        ██╔╝     ██║     ████╗ ████║"
+    echo "  ██║     ██║   ██║██║     ███████║██║       ██╔╝      ██║     ██╔████╔██║"
+    echo "  ██║     ██║   ██║██║     ██╔══██║██║      ██╔╝       ██║     ██║╚██╔╝██║"
+    echo "  ███████╗╚██████╔╝╚██████╗██║  ██║███████╗██╔╝        ███████╗██║ ╚═╝ ██║"
+    echo "  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝         ╚══════╝╚═╝     ╚═╝"
+    echo -e "${NC}"
+    _rule "─" "${MUTED}"
+    printf "  ${BOLD}%-30s${NC}${MUTED}%s${NC}\n"         "Local LLM Auto-Setup" "v${SCRIPT_VERSION}  ·  Universal Edition"
+    printf "  ${MUTED}%-30s%s${NC}\n"         "Ubuntu / Debian / WSL2" "NVIDIA · AMD ROCm · CPU-only · Intel Arc"
+    _rule "─" "${MUTED}"
+    echo ""
+    echo -e "  ${MUTED}Installs:${NC}  Ollama  ·  Open WebUI  ·  Neural Terminal"
+    echo -e "  ${MUTED}          ${NC}  cowork (Open Interpreter)  ·  aider"
+    echo -e "  ${MUTED}Optional:${NC}  Claude Code  ·  OpenAI Codex  ·  PentestAgent  ·  CLI tools"
+    echo ""
+    _rule "─" "${MUTED}"
+    echo -e "  ${MUTED}Log:${NC}  $LOG_FILE"
+    _rule "─" "${MUTED}"
+    echo ""
+}
+_print_welcome
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -91,7 +204,8 @@ ask_yes_no() {
         warn "Non-interactive — treating '$1' as No."
         return 1
     fi
-    read -r -p "$(echo -e "${YELLOW}?${NC} $1 (y/N) ")" -n 1 ans; echo
+    printf "  ${ACCENT}?${NC}  ${BOLD}%s${NC} ${MUTED}[y/N]${NC} " "$1"
+    read -r -n 1 ans; echo
     [[ "$ans" =~ ^[Yy]$ ]]
 }
 
@@ -177,14 +291,17 @@ DISTRO_CODENAME=$(get_distro_codename)
 UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null \
     || grep -oP '(?<=^VERSION_ID=")[\d.]+' /etc/os-release 2>/dev/null \
     || echo "unknown")
-info "Distro: ${DISTRO_ID} ${UBUNTU_VERSION} (${DISTRO_CODENAME}) on ${HOST_ARCH}"
+echo -e "  ${MUTED}Distro :${NC}  ${DISTRO_ID} ${UBUNTU_VERSION} (${DISTRO_CODENAME}) on ${HOST_ARCH}"
 case "$DISTRO_ID" in
     ubuntu|debian|linuxmint|pop|neon|elementary|zorin|kali|parrot) ;;
     *) warn "Distro '${DISTRO_ID}' not officially tested — apt paths will be used." ;;
 esac
 
 # Single sudo prompt; keepalive every 50s for the entire script
-echo -e "${CYAN}[sudo]${NC} This script needs elevated privileges for apt, systemd, and GPU drivers."
+echo ""
+echo -e "  ${ACCENT}❯${NC}  ${BOLD}Administrator access required${NC}"
+echo -e "  ${MUTED}    apt · systemd · GPU drivers${NC}"
+echo ""
 sudo -v || error "sudo authentication failed."
 ( while true; do sleep 50; sudo -v 2>/dev/null; done ) &
 SUDO_KEEPALIVE_PID=$!
@@ -439,10 +556,16 @@ VRAM_USABLE_MIB=$(( GPU_VRAM_MIB - VRAM_HEADROOM_MIB ))
 (( VRAM_USABLE_MIB < 0 )) && VRAM_USABLE_MIB=0
 
 # How many GPU layers fit for a given model?
-# $1=model_size_gb  $2=num_layers  → integer layer count
+# Returns -1 (= full GPU offload, all layers) when the entire model fits in VRAM.
+# Ollama and llama.cpp both treat -1 as "offload everything to GPU".
 gpu_layers_for() {
     local size_gb="$1" num_layers="$2"
-    local mib_per_layer=$(( (size_gb * 1024) / num_layers ))
+    local model_mib=$(( size_gb * 1024 ))
+    if (( model_mib <= VRAM_USABLE_MIB )); then
+        echo "-1"   # whole model fits — full GPU offload
+        return
+    fi
+    local mib_per_layer=$(( model_mib / num_layers ))
     (( mib_per_layer < 1 )) && mib_per_layer=1
     local layers=$(( VRAM_USABLE_MIB / mib_per_layer ))
     (( layers > num_layers )) && layers=$num_layers
@@ -547,8 +670,8 @@ select_model
 # Calculate GPU/CPU layer split
 if (( HAS_GPU )); then
     GPU_LAYERS=$(gpu_layers_for "${M[size_gb]}" "${M[layers]}")
-    CPU_LAYERS=$(( M[layers] - GPU_LAYERS ))
-    (( CPU_LAYERS < 0 )) && CPU_LAYERS=0
+    if [[ "$GPU_LAYERS" == "-1" ]]; then CPU_LAYERS=0
+    else CPU_LAYERS=$(( M[layers] - GPU_LAYERS )); (( CPU_LAYERS < 0 )) && CPU_LAYERS=0; fi
 else
     GPU_LAYERS=0
     CPU_LAYERS="${M[layers]}"
@@ -747,8 +870,8 @@ if ask_yes_no "Override with manual model selection?"; then
     # Recalculate layer split and batch for the manually chosen model
     if (( HAS_GPU )); then
         GPU_LAYERS=$(gpu_layers_for "${M[size_gb]}" "${M[layers]}")
-        CPU_LAYERS=$(( M[layers] - GPU_LAYERS ))
-        (( CPU_LAYERS < 0 )) && CPU_LAYERS=0
+        if [[ "$GPU_LAYERS" == "-1" ]]; then CPU_LAYERS=0
+        else CPU_LAYERS=$(( M[layers] - GPU_LAYERS )); (( CPU_LAYERS < 0 )) && CPU_LAYERS=0; fi
     else
         GPU_LAYERS=0; CPU_LAYERS="${M[layers]}"
     fi
@@ -1000,9 +1123,42 @@ if (( HAS_NVIDIA )); then
         unset _uver _kr_url _cuda_pkg
     fi
 
-    ldconfig -p 2>/dev/null | grep -q "libcudart.so.12" \
-        && info "libcudart.so.12 in ldconfig ✔" \
-        || warn "libcudart.so.12 not found — GPU inference may fail."
+    # ── libcudart resolution ─────────────────────────────────────────────────
+    # Ollama bundles CUDA in /usr/local/lib/ollama/cuda_v12/ — scan that too.
+    _cuda_found=0
+    if ldconfig -p 2>/dev/null | grep -q "libcudart\.so\.12"; then
+        info "libcudart.so.12 found in system ldconfig ✔"
+        _cuda_found=1
+    fi
+    if (( !_cuda_found )); then
+        _cuda_lib_path=""
+        for _d in \
+            /usr/local/lib/ollama/cuda_v12 \
+            /usr/local/lib/ollama/cuda_v11 \
+            /usr/local/cuda/lib64 \
+            /usr/local/cuda-1[23]/lib64 \
+            /usr/local/cuda-1[23].*/lib64 \
+            /usr/lib/x86_64-linux-gnu; do
+            [[ -f "$_d/libcudart.so.12" || -f "$_d/libcudart.so" ]] \
+                && { _cuda_lib_path="$_d"; _cuda_found=1; break; }
+        done
+        if [[ -n "$_cuda_lib_path" ]]; then
+            info "Found libcudart in: $_cuda_lib_path — registering…"
+            echo "$_cuda_lib_path" | sudo tee /etc/ld.so.conf.d/ollama-cuda.conf >/dev/null
+            sudo ldconfig
+            if ! grep -q "# ollama-cuda-ld" "$HOME/.bashrc" 2>/dev/null; then
+                printf '\n# ollama-cuda-ld\nexport LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' \
+                    "$_cuda_lib_path" >> "$HOME/.bashrc"
+            fi
+            export LD_LIBRARY_PATH="$_cuda_lib_path:${LD_LIBRARY_PATH:-}"
+            info "libcudart registered via ldconfig ✔  (persists across reboots)"
+        else
+            warn "libcudart.so.12 not found — GPU inference may fail."
+            warn "  Try: sudo apt-get install cuda-libraries-12-0  or check nvidia-smi CUDA version"
+        fi
+        unset _cuda_lib_path
+    fi
+    unset _cuda_found
 fi
 
 # =============================================================================
@@ -2003,6 +2159,10 @@ export AIOHTTP_CLIENT_TIMEOUT=900
 export AIOHTTP_CLIENT_TIMEOUT_TOTAL=900
 export OLLAMA_REQUEST_TIMEOUT=900
 export OLLAMA_CLIENT_TIMEOUT=900
+# Prevent Open WebUI from loading 2 models simultaneously (causes 100% VRAM)
+export OLLAMA_NUM_PARALLEL=1
+export OLLAMA_MAX_LOADED_MODELS=1
+export OLLAMA_FLASH_ATTENTION=1
 
 # Data + misc
 export DATA_DIR="\$OWUI_DATA"
@@ -2577,10 +2737,10 @@ if [[ -t 0 ]]; then
 else
     _tool_sel=""
 fi
-[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6 7 8"
+[[ "${_tool_sel:-}" == "all" ]] && _tool_sel=" 1 2 3 4 5 6 7 8 "
 
 # ── 1: tmux ───────────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"1"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 1 "* ]]; then
     sudo apt-get install -y tmux || warn "tmux install failed."
     if [[ ! -f "$HOME/.tmux.conf" ]]; then
         cat > "$HOME/.tmux.conf" <<'TMUXCFG'
@@ -2604,7 +2764,7 @@ TMUXCFG
 fi
 
 # ── 2: CLI tools ──────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"2"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 2 "* ]]; then
     CLI_PKGS=(bat fzf ripgrep fd-find btop htop ncdu jq tree p7zip-full unzip zip)
     sudo apt-get install -y "${CLI_PKGS[@]}" || warn "Some CLI tools failed — continuing."
 
@@ -2641,7 +2801,7 @@ QOLALIASES
 fi
 
 # ── 3: nvtop ──────────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"3"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 3 "* ]]; then
     if (( HAS_GPU )); then
         sudo apt-get install -y nvtop \
             || warn "nvtop not in apt — try: sudo snap install nvtop"
@@ -2652,7 +2812,7 @@ if [[ "${_tool_sel:-}" == *"3"* ]]; then
 fi
 
 # ── 4: GUI tools ──────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"4"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 4 "* ]]; then
     if (( HAVE_DISPLAY )); then
         sudo apt-get install -y thunar mousepad meld gcolor3 \
             || warn "Some GUI packages failed."
@@ -2663,7 +2823,7 @@ if [[ "${_tool_sel:-}" == *"4"* ]]; then
 fi
 
 # ── 5: neofetch ───────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"5"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 5 "* ]]; then
     sudo apt-get install -y neofetch 2>/dev/null || true
     command -v fastfetch &>/dev/null \
         || sudo apt-get install -y fastfetch 2>/dev/null \
@@ -2672,7 +2832,7 @@ if [[ "${_tool_sel:-}" == *"5"* ]]; then
 fi
 
 # ── 6: Claude Code ────────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"6"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 6 "* ]]; then
     step "Claude Code (Anthropic CLI coding agent)"
     _node_ok=0
     if command -v node &>/dev/null; then
@@ -2722,7 +2882,7 @@ CC_EOF
 fi
 
 # ── 7: OpenAI Codex ───────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"7"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 7 "* ]]; then
     step "OpenAI Codex CLI coding agent"
     _node_ok=0
     if command -v node &>/dev/null; then
@@ -2772,7 +2932,7 @@ CODEX_EOF
 fi
 
 # ── 8: PentestAgent ──────────────────────────────────────────────────────────
-if [[ "${_tool_sel:-}" == *"8"* ]]; then
+if [[ " ${_tool_sel:-} " == *" 8 "* ]]; then
     step "PentestAgent (AI pentesting framework — local, no cloud)"
 
     PA_DIR="$HOME/pentestagent"
@@ -2790,7 +2950,9 @@ if [[ "${_tool_sel:-}" == *"8"* ]]; then
         git -C "$PA_DIR" pull --quiet || warn "git pull failed — using existing version."
     else
         info "Cloning PentestAgent…"
-        git clone --depth=1 https://github.com/vishnupriyavr/pentest-agent "$PA_DIR"             || { warn "Clone failed — check your internet connection."; }
+        GIT_TERMINAL_PROMPT=0 git clone --depth=1 \
+            "https://github.com/vishnupriyavr/pentest-agent.git" "$PA_DIR" \
+            2>&1 || { warn "PentestAgent clone failed — check network."; }
     fi
 
     if [[ ! -d "$PA_DIR" ]]; then
@@ -3332,9 +3494,14 @@ echo -e "   ${_Y}llm-show-config${_N}  Show all paths, model config, and service
 echo -e "   ${_Y}llm-help${_N}         This help screen"
 echo ""
 
-echo -e "${_C}  ── AI coding agents ───────────────────────────────────────────────${_N}"
-echo -e "   ${_Y}claude${_N}           Claude Code (Anthropic, cloud — needs API key)"
-echo -e "   ${_Y}codex-agent${_N}      OpenAI Codex (cloud — needs API key)"
+echo -e "${_C}  ── AI coding  (local — no API key needed) ─────────────────────────${_N}"
+echo -e "   ${_Y}cowork${_N}           Open Interpreter — autonomous AI using your local model"
+echo -e "   ${_Y}ai${_N} / ${_Y}aider${_N}       Aider pair programmer — git-integrated, edits files"
+echo -e "   ${_Y}run-model${_N}        Direct terminal chat with active local model"
+echo ""
+echo -e "${_C}  ── AI coding  (cloud — install via setup options 6/7) ─────────────${_N}"
+echo -e "   ${_Y}claude${_N}           Claude Code  ${_M}(ANTHROPIC_API_KEY required)${_N}"
+echo -e "   ${_Y}codex-agent${_N}      OpenAI Codex ${_M}(OPENAI_API_KEY required)${_N}"
 echo ""
 echo -e "${_C}  ── Security / Pentesting ───────────────────────────────────────────${_N}"
 echo -e "   ${_Y}pentest${_N}          PentestAgent AI — RAG + multi-agent pentesting (fully local)"
@@ -3436,10 +3603,10 @@ PASS=0; WARN_COUNT=0
 _check() {
     local label="$1" ok="$2" detail="${3:-}"
     if (( ok )); then
-        echo -e "  ${GREEN}✔${NC}  $label${detail:+  ($detail)}"
+        printf "  ${ACCENT2}✓${NC}  %-34s ${MUTED}%s${NC}\n" "$label" "$detail"
         (( PASS++ ))
     else
-        echo -e "  ${YELLOW}✗${NC}  $label${detail:+  — $detail}"
+        printf "  ${WARN_COL}✗${NC}  %-34s ${WARN_COL}%s${NC}\n" "$label" "${detail:-not found}"
         (( WARN_COUNT++ ))
     fi
 }
@@ -3514,46 +3681,66 @@ fi
 # FINAL SUMMARY
 # =============================================================================
 echo ""
-echo -e "  ${CYAN}┌─────────────────────────  YOUR SETUP  ──────────────────────────┐${NC}"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "CPU"   "$CPU_MODEL"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "RAM"   "${TOTAL_RAM_GB} GB"
-if (( HAS_NVIDIA )); then
-    printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "GPU" "$GPU_NAME  (${GPU_VRAM_GB} GB VRAM) [CUDA]"
-elif (( HAS_AMD_GPU )); then
-    printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "GPU" "$GPU_NAME  (${GPU_VRAM_GB} GB VRAM) [ROCm]"
-elif (( HAS_INTEL_GPU )); then
-    printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "GPU" "$GPU_NAME  [Arc — CPU tiers used]"
-else
-    printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "GPU" "None (CPU-only)"
-fi
-echo -e "  ${CYAN}├────────────────────────────────────────────────────────────────┤${NC}"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "Model"      "${M[name]}"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "Caps"       "${M[caps]}"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "Ollama tag" "$OLLAMA_TAG"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "GPU layers" "${GPU_LAYERS} / ${M[layers]} total   batch: $BATCH"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "Threads"    "$HW_THREADS"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "GGUF path"  "$GGUF_MODELS/${M[file]}"
-printf "  ${CYAN}│${NC}  %-18s  %-41s${CYAN}│${NC}\n" "Config"     "$MODEL_CONFIG"
-echo -e "  ${CYAN}└────────────────────────────────────────────────────────────────┘${NC}"
+echo ""
+_rule "═" "${ACCENT2}"
+echo -e "${ACCENT2}${BOLD}"
+echo "  ██████╗  ██████╗ ███╗   ██╗███████╗"
+echo "  ██╔══██╗██╔═══██╗████╗  ██║██╔════╝"
+echo "  ██║  ██║██║   ██║██╔██╗ ██║█████╗  "
+echo "  ██║  ██║██║   ██║██║╚██╗██║██╔══╝  "
+echo "  ██████╔╝╚██████╔╝██║ ╚████║███████╗"
+echo "  ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚══════╝"
+echo -e "${NC}"
+echo -e "  ${ACCENT2}${BOLD}Installation complete!${NC}  ${MUTED}Local LLM stack is ready.${NC}"
+_rule "═" "${ACCENT2}"
 
 echo ""
-echo -e "${GREEN}  ╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}  ║                                                               ║${NC}"
-echo -e "${GREEN}  ║   Activate all aliases in this terminal:                     ║${NC}"
-echo -e "${GREEN}  ║                                                               ║${NC}"
-echo -e "${GREEN}  ║          ${YELLOW}exec bash${GREEN}                                          ║${NC}"
-echo -e "${GREEN}  ║                                                               ║${NC}"
-echo -e "${GREEN}  ║   Same window. Same directory. Aliases live immediately.     ║${NC}"
-echo -e "${GREEN}  ╚═══════════════════════════════════════════════════════════════╝${NC}"
+echo -e "  ${BOLD}${ACCENT}Hardware${NC}"
+printf "  ${MUTED}%-14s${NC}  %s\n" "CPU"  "$CPU_MODEL"
+printf "  ${MUTED}%-14s${NC}  %s\n" "RAM"  "${TOTAL_RAM_GB} GB"
+if (( HAS_NVIDIA )); then
+    printf "  ${MUTED}%-14s${NC}  %s\n" "GPU" "$GPU_NAME  (${GPU_VRAM_GB} GB VRAM)  ${ACCENT}[CUDA]${NC}"
+elif (( HAS_AMD_GPU )); then
+    printf "  ${MUTED}%-14s${NC}  %s\n" "GPU" "$GPU_NAME  (${GPU_VRAM_GB} GB VRAM)  ${ACCENT}[ROCm]${NC}"
+elif (( HAS_INTEL_GPU )); then
+    printf "  ${MUTED}%-14s${NC}  %s\n" "GPU" "$GPU_NAME  ${MUTED}[Arc — CPU tiers]${NC}"
+else
+    printf "  ${MUTED}%-14s${NC}  %s\n" "GPU" "None  ${MUTED}(CPU-only mode)${NC}"
+fi
+
 echo ""
-echo -e "  ${CYAN}Then:${NC}"
-echo -e "    ${YELLOW}webui${NC}          → Open WebUI   http://localhost:8080   ${CYAN}(primary UI)${NC}"
-echo -e "    ${YELLOW}chat${NC}           → Neural Terminal   http://localhost:8090"
-echo -e "    ${YELLOW}cowork${NC}         → autonomous coding AI"
-echo -e "    ${YELLOW}ai${NC}             → aider AI pair programmer"
-echo -e "    ${YELLOW}llm-show-config${NC} → all paths & service status"
-echo -e "    ${YELLOW}llm-help${NC}       → full command reference"
-is_wsl2 && echo "" && echo -e "  ${YELLOW}  WSL2:${NC} ${YELLOW}webui${NC} starts Ollama automatically — just run it."
+echo -e "  ${BOLD}${ACCENT}Model${NC}"
+printf "  ${MUTED}%-14s${NC}  ${BOLD}%s${NC}\n" "Selected"    "${M[name]}"
+printf "  ${MUTED}%-14s${NC}  %s\n"              "Capabilities" "${M[caps]}"
+printf "  ${MUTED}%-14s${NC}  %s\n"              "Ollama tag"  "$OLLAMA_TAG"
+printf "  ${MUTED}%-14s${NC}  %s\n"              "Layers"      "GPU: ${GPU_LAYERS}  CPU: ${CPU_LAYERS}  Batch: $BATCH"
+printf "  ${MUTED}%-14s${NC}  ${MUTED}%s${NC}\n" "GGUF"        "$GGUF_MODELS/${M[file]}"
+printf "  ${MUTED}%-14s${NC}  ${MUTED}%s${NC}\n" "Config"      "$MODEL_CONFIG"
+
+echo ""
+_rule "─" "${MUTED}"
+
+echo ""
+echo -e "  ${BOLD}${ACCENT}Next step  —  reload your shell${NC}"
+echo ""
+echo -e "  ${ACCENT2}${BOLD}    exec bash${NC}"
+echo ""
+echo -e "  ${MUTED}    Aliases become active. Same window. Same directory.${NC}"
+echo ""
+_rule "─" "${MUTED}"
+
+echo ""
+echo -e "  ${BOLD}${ACCENT}Quick start${NC}"
+echo ""
+echo -e "  ${ACCENT2}webui${NC}             ${MUTED}→${NC}  Open WebUI  ${MUTED}http://localhost:8080${NC}  ${ACCENT}← primary UI${NC}"
+echo -e "  ${ACCENT2}chat${NC}              ${MUTED}→${NC}  Neural Terminal  ${MUTED}http://localhost:8090${NC}"
+echo -e "  ${ACCENT2}cowork${NC}            ${MUTED}→${NC}  Autonomous coding AI  ${MUTED}(Open Interpreter)${NC}"
+echo -e "  ${ACCENT2}ai${NC}                ${MUTED}→${NC}  Aider AI pair programmer"
+echo -e "  ${ACCENT2}llm-show-config${NC}   ${MUTED}→${NC}  All paths, config, service status"
+echo -e "  ${ACCENT2}llm-help${NC}          ${MUTED}→${NC}  Full command reference"
+is_wsl2 && { echo ""; echo -e "  ${WARN_COL}WSL2${NC}  ${MUTED}—${NC}  Run ${ACCENT2}webui${NC} — it starts Ollama automatically."; }
+echo ""
+_rule "─" "${MUTED}"
 echo ""
 
 # Troubleshooting hints (only when there are warnings)
@@ -3580,3 +3767,11 @@ echo ""
 # Clean up sudo keepalive
 kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
 trap - EXIT INT TERM
+
+# Source aliases so llm-help is immediately callable
+[[ -f "$ALIAS_FILE" ]] && source "$ALIAS_FILE" 2>/dev/null || true
+# Show the help screen as the very last thing printed
+if [[ -x "$BIN_DIR/llm-help" ]]; then
+    echo ""
+    "$BIN_DIR/llm-help"
+fi
