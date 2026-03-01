@@ -18,7 +18,7 @@
 #   ─────────────────────────────────────────────────────────────────────────
 #   Installs:  Ollama · llama-cpp-python · Neural Terminal (port 8090)
 #              Open WebUI (port 8080) · cowork (Open Interpreter) · aider
-#   Optional:  Claude Code · OpenAI Codex · tmux · CLI tools · GPU monitor
+#   Optional:  Claude Code · OpenAI Codex · PentestAgent · tmux · CLI tools · GPU monitor
 # =============================================================================
 
 set -uo pipefail
@@ -564,71 +564,95 @@ fi
 
 # ── Manual override ───────────────────────────────────────────────────────────
 # Show picker with installed-model indicators
-_is_installed() { [[ -f "$GGUF_MODELS/$1" ]] && echo -e " ${GREEN}✔${NC}" || echo "  "; }
+# _is_installed: plain text, no ANSI — printf-safe
+_is_installed() { [[ -f "$GGUF_MODELS/$1" ]] && echo " ✔" || echo "  "; }
 
 info "Auto-selected: ${M[name]}  (${M[tier]})  GPU:${GPU_LAYERS} CPU:${CPU_LAYERS} layers"
 echo ""
 
 if ask_yes_no "Override with manual model selection?"; then
+
+    # ── Header ──────────────────────────────────────────────────────────────
     echo ""
-    echo -e "  ${CYAN}┌────┬──────────────────────────────────────┬──────┬──────┬──────────────────────────┬───┐${NC}"
-    echo -e "  ${CYAN}│ #  │ Model                                │ Quant│ VRAM │ Capabilities             │ ✔ │${NC}"
-    echo -e "  ${CYAN}├────┼──────────────────────────────────────┼──────┼──────┼──────────────────────────┼───┤${NC}"
-    echo "  │    │ ── Small / CPU ──────────────────── │      │      │                          │   │"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "1"  "Qwen3-1.7B"                           "Q8"   "CPU"   "★ [TOOLS] [THINK]"          "$(_is_installed Qwen_Qwen3-1.7B-Q8_0.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "2"  "Qwen3-4B"                             "Q4"   "~3GB"  "★ [TOOLS] [THINK]"          "$(_is_installed Qwen_Qwen3-4B-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "3"  "Phi-4-mini 3.8B"                      "Q4"   "CPU"   "★ [TOOLS] [THINK]"          "$(_is_installed microsoft_Phi-4-mini-instruct-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "4"  "Qwen3-0.6B"                           "Q8"   "CPU"   "[TOOLS] [THINK] tiny"       "$(_is_installed Qwen_Qwen3-0.6B-Q8_0.gguf)"
-    echo "  │    │ ── 6-8 GB VRAM ──────────────────── │      │      │                          │   │"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "5"  "Qwen3-8B"                             "Q4"   "~5GB"  "★ [TOOLS] [THINK]"          "$(_is_installed Qwen_Qwen3-8B-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "6"  "Qwen3-8B"                             "Q6"   "~6GB"  "★ [TOOLS] [THINK]"          "$(_is_installed Qwen_Qwen3-8B-Q6_K.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "7"  "DeepSeek-R1-Distill-8B"             "Q4"   "~5GB"  "[THINK] deep reasoning"     "$(_is_installed DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "8"  "Gemma-3-9B"                           "Q4"   "~6GB"  "[TOOLS] Google"             "$(_is_installed google_gemma-3-9b-it-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "9"  "Gemma-3-12B"                          "Q4"   "~8GB"  "[TOOLS] Google vision"      "$(_is_installed google_gemma-3-12b-it-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "10" "Dolphin3.0-8B"                        "Q4"   "~5GB"  "[UNCENS] uncensored"        "$(_is_installed Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf)"
-    echo "  │    │ ── 10-12 GB VRAM ─────────────────── │      │      │                          │   │"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "11" "Phi-4-14B"                            "Q4"   "~9GB"  "★ [TOOLS] top coding+math"  "$(_is_installed phi-4-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "12" "Qwen3-14B"                            "Q4"   "~9GB"  "★ [TOOLS] [THINK]"          "$(_is_installed Qwen_Qwen3-14B-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "13" "DeepSeek-R1-Distill-Qwen-14B"         "Q4"   "~9GB"  "[THINK] deep reasoning"     "$(_is_installed DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf)"
-    echo "  │    │ ── 16 GB VRAM ────────────────────── │      │      │                          │   │"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "14" "Gemma-3-27B"                          "Q4"   "~12GB" "[TOOLS] Google"             "$(_is_installed google_gemma-3-27b-it-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "15" "Mistral-Small-3.1-24B"                "Q4"   "~14GB" "[TOOLS] [THINK] 128K"       "$(_is_installed mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "16" "Mistral-Small-3.2-24B"                "Q4"   "~14GB" "★ [TOOLS] [THINK] newest"   "$(_is_installed mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "17" "Qwen3-30B-A3B (MoE ★fast)"            "Q4"   "~16GB" "★ [TOOLS] [THINK] MoE"      "$(_is_installed Qwen_Qwen3-30B-A3B-Q4_K_M.gguf)"
-    echo "  │    │ ── 24+ GB VRAM ───────────────────── │      │      │                          │   │"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "18" "Qwen3-32B"                            "Q4"   "~19GB" "★ [TOOLS] [THINK]"          "$(_is_installed Qwen_Qwen3-32B-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "19" "DeepSeek-R1-Distill-Qwen-32B"         "Q4"   "~19GB" "[THINK] deep reasoning"     "$(_is_installed DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf)"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "20" "Gemma-3-27B (Google)"                 "Q4"   "~16GB" "[TOOLS] Google"             "$(_is_installed google_gemma-3-27b-it-Q4_K_M.gguf)"
-    echo "  │    │ ── 48 GB VRAM ────────────────────── │      │      │                          │   │"
-    printf "  │ %-3s│ %-39s│ %-6s│ %-6s│ %-26s│%s │\n" \
-        "21" "Llama-3.3-70B"                        "Q4"   "~40GB" "★ [TOOLS] multi-GPU"        "$(_is_installed Llama-3.3-70B-Instruct-Q4_K_M.gguf)"
-    echo -e "  ${CYAN}└────┴──────────────────────────────────────┴──────┴──────┴──────────────────────────┴───┘${NC}"
-    echo -e "  ${GREEN}✔ = already downloaded${NC}"
+    echo -e "  ${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${CYAN}║  MODEL PICKER  ·  type a number and press Enter                         ║${NC}"
+    echo -e "  ${CYAN}║  ✔ = already downloaded to disk                                         ║${NC}"
+    echo -e "  ${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${YELLOW}MoE tip (17):${NC} 30B params, only 3B active — 30B quality at 8B speed."
-    echo -e "  ${YELLOW}R1-0528 (7):${NC}  Updated May 2025 distill — major reasoning improvement."
+    printf "  ${CYAN}%-4s  %-32s  %-5s  %-6s  %-2s  %s${NC}\n" \
+        "#" "Model" "Quant" "VRAM" "✔" "Capabilities"
+    echo -e "  ${CYAN}────  ────────────────────────────────  ─────  ──────  ──  ─────────────────────${NC}"
+
+    # ── Tier: CPU / Small ───────────────────────────────────────────────────
+    echo -e "  ${YELLOW}  ▸  CPU / No GPU needed${NC}"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "1"  "Qwen3-1.7B"          "Q8"  "CPU"    "$(_is_installed Qwen_Qwen3-1.7B-Q8_0.gguf)"            "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "2"  "Qwen3-4B"            "Q4"  "~3GB"   "$(_is_installed Qwen_Qwen3-4B-Q4_K_M.gguf)"            "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "3"  "Phi-4-mini 3.8B"     "Q4"  "CPU"    "$(_is_installed microsoft_Phi-4-mini-instruct-Q4_K_M.gguf)" "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "4"  "Qwen3-0.6B"          "Q8"  "CPU"    "$(_is_installed Qwen_Qwen3-0.6B-Q8_0.gguf)"            "  TOOLS · THINK · tiny"
+
+    # ── Tier: 6-8 GB VRAM ───────────────────────────────────────────────────
     echo ""
-    read -r -p "  Choice [1-21] (Enter to keep auto-selected): " _manual_choice
+    echo -e "  ${YELLOW}  ▸  6–8 GB VRAM${NC}"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "5"  "Qwen3-8B"            "Q4"  "~5GB"   "$(_is_installed Qwen_Qwen3-8B-Q4_K_M.gguf)"            "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "6"  "Qwen3-8B"            "Q6"  "~6GB"   "$(_is_installed Qwen_Qwen3-8B-Q6_K.gguf)"              "★ TOOLS · THINK · higher quality"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "7"  "DeepSeek-R1-Distill-8B"  "Q4"  "~5GB"   "$(_is_installed DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf)" "  THINK · deep reasoning"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "8"  "Gemma-3-9B"          "Q4"  "~6GB"   "$(_is_installed google_gemma-3-9b-it-Q4_K_M.gguf)"    "  TOOLS · Google"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "9"  "Gemma-3-12B"         "Q4"  "~8GB"   "$(_is_installed google_gemma-3-12b-it-Q4_K_M.gguf)"   "  TOOLS · Google vision"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "10" "Dolphin3.0-8B"       "Q4"  "~5GB"   "$(_is_installed Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf)" "  UNCENSORED"
+
+    # ── Tier: 10-12 GB VRAM ─────────────────────────────────────────────────
+    echo ""
+    echo -e "  ${YELLOW}  ▸  10–12 GB VRAM${NC}"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "11" "Phi-4-14B"           "Q4"  "~9GB"   "$(_is_installed phi-4-Q4_K_M.gguf)"                   "★ TOOLS · top coding + math"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "12" "Qwen3-14B"           "Q4"  "~9GB"   "$(_is_installed Qwen_Qwen3-14B-Q4_K_M.gguf)"          "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "13" "DeepSeek-R1-Distill-14B"  "Q4"  "~9GB"   "$(_is_installed DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf)" "  THINK · deep reasoning"
+
+    # ── Tier: 16 GB VRAM ────────────────────────────────────────────────────
+    echo ""
+    echo -e "  ${YELLOW}  ▸  16 GB VRAM${NC}"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "14" "Gemma-3-27B"         "Q4"  "~12GB"  "$(_is_installed google_gemma-3-27b-it-Q4_K_M.gguf)"   "  TOOLS · Google"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "15" "Mistral-Small-3.1-24B" "Q4" "~14GB" "$(_is_installed mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf)" "  TOOLS · THINK · 128K context"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "16" "Mistral-Small-3.2-24B" "Q4" "~14GB" "$(_is_installed mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf)" "★ TOOLS · THINK · newest"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "17" "Qwen3-30B-A3B  (MoE)" "Q4" "~16GB" "$(_is_installed Qwen_Qwen3-30B-A3B-Q4_K_M.gguf)"     "★ TOOLS · THINK · 30B quality @ 8B speed"
+
+    # ── Tier: 24+ GB VRAM ───────────────────────────────────────────────────
+    echo ""
+    echo -e "  ${YELLOW}  ▸  24+ GB VRAM${NC}"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "18" "Qwen3-32B"           "Q4"  "~19GB"  "$(_is_installed Qwen_Qwen3-32B-Q4_K_M.gguf)"          "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "19" "DeepSeek-R1-Distill-32B" "Q4" "~19GB" "$(_is_installed DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf)" "  THINK · deep reasoning"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "20" "Gemma-3-27B (Google)" "Q4" "~16GB"  "$(_is_installed google_gemma-3-27b-it-Q4_K_M.gguf)"  "  TOOLS · Google"
+
+    # ── Tier: 48 GB VRAM ────────────────────────────────────────────────────
+    echo ""
+    echo -e "  ${YELLOW}  ▸  48 GB VRAM  (multi-GPU)${NC}"
+    printf "  %-4s  %-32s  %-5s  %-6s  %-2s  %s\n" \
+        "21" "Llama-3.3-70B"       "Q4"  "~40GB"  "$(_is_installed Llama-3.3-70B-Instruct-Q4_K_M.gguf)" "★ TOOLS · flagship"
+
+    echo ""
+    echo -e "  ${CYAN}────  ────────────────────────────────  ─────  ──────  ──  ─────────────────────${NC}"
+    echo -e "  ${GREEN}★ = recommended for tier   ✔ = already on disk${NC}"
+    echo ""
+    read -r -p "  Choice [1-21] (Enter = keep auto-selected): " _manual_choice
 
     case "${_manual_choice:-}" in
         1)  M[name]="Qwen3-1.7B Q8_0";                         M[caps]="TOOLS + THINK"
@@ -2542,15 +2566,18 @@ fi
 printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "5" "neofetch"     "system info banner + fastfetch"
 echo ""
 echo -e "  ${CYAN}── AI coding agents ──────────────────────────────────────────────${NC}"
-printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "6" "Claude Code"  "Anthropic CLI agent — codes, edits, runs commands"
-printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "7" "OpenAI Codex" "OpenAI CLI coding agent — needs Node 22"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "6" "Claude Code"   "Anthropic CLI agent — codes, edits, runs commands"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "7" "OpenAI Codex"  "OpenAI CLI coding agent — needs Node 22"
+echo ""
+echo -e "  ${CYAN}── Security / Pentesting ──────────────────────────────────────────${NC}"
+printf "    ${YELLOW}%-4s${NC} %-20s %s\n" "8" "PentestAgent" "AI pentesting framework — RAG + multi-agent crews (local)"
 echo ""
 if [[ -t 0 ]]; then
     read -r -p "  > " _tool_sel
 else
     _tool_sel=""
 fi
-[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6 7"
+[[ "${_tool_sel:-}" == "all" ]] && _tool_sel="1 2 3 4 5 6 7 8"
 
 # ── 1: tmux ───────────────────────────────────────────────────────────────────
 if [[ "${_tool_sel:-}" == *"1"* ]]; then
@@ -2741,6 +2768,202 @@ CODEX_EOF
         info "  API key: export OPENAI_API_KEY=sk-..."
     else
         warn "OpenAI Codex skipped — Node.js >= 22 required."
+    fi
+fi
+
+# ── 8: PentestAgent ──────────────────────────────────────────────────────────
+if [[ "${_tool_sel:-}" == *"8"* ]]; then
+    step "PentestAgent (AI pentesting framework — local, no cloud)"
+
+    PA_DIR="$HOME/pentestagent"
+    PA_VENV="$PA_DIR/venv"
+    PA_ENV="$PA_DIR/.env"
+    PA_LAUNCH="$BIN_DIR/pentestagent-start"
+
+    # ── Dependencies ──────────────────────────────────────────────────────────
+    info "Installing system dependencies…"
+    sudo apt-get install -y git nmap curl jq python3-dev build-essential         || warn "Some system deps failed — continuing."
+
+    # ── Clone / update ────────────────────────────────────────────────────────
+    if [[ -d "$PA_DIR/.git" ]]; then
+        info "PentestAgent already cloned — pulling latest…"
+        git -C "$PA_DIR" pull --quiet || warn "git pull failed — using existing version."
+    else
+        info "Cloning PentestAgent…"
+        git clone --depth=1 https://github.com/vishnupriyavr/pentest-agent "$PA_DIR"             || { warn "Clone failed — check your internet connection."; }
+    fi
+
+    if [[ ! -d "$PA_DIR" ]]; then
+        warn "PentestAgent directory not found — skipping remaining setup."
+    else
+        # ── Python venv ────────────────────────────────────────────────────────
+        info "Creating Python venv for PentestAgent…"
+        if [[ ! -d "$PA_VENV" ]]; then
+            "${PYTHON_BIN:-python3}" -m venv "$PA_VENV"
+        fi
+        "$PA_VENV/bin/pip" install --upgrade pip --quiet || true
+        "$PA_VENV/bin/pip" install --upgrade "setuptools>=70" wheel --quiet || true
+
+        info "Installing PentestAgent Python packages…"
+        if [[ -f "$PA_DIR/requirements.txt" ]]; then
+            "$PA_VENV/bin/pip" install -r "$PA_DIR/requirements.txt"                 || warn "Some requirements failed — tool may still work."
+        fi
+        # Install the package itself (editable so patches persist)
+        if [[ -f "$PA_DIR/pyproject.toml" || -f "$PA_DIR/setup.py" ]]; then
+            "$PA_VENV/bin/pip" install -e "$PA_DIR" --quiet                 || warn "pip install -e failed — trying without -e."
+        fi
+
+        # ── Patch hardcoded OpenAI embedding references ────────────────────────
+        # PentestAgent source hard-codes "text-embedding-3-small" in two places.
+        # We patch them to use nomic-embed-text via Ollama before first run.
+        info "Patching hardcoded OpenAI embedding model references…"
+        _patched=0
+        for _f in "$PA_DIR/pentestagent/knowledge/rag.py"                    "$PA_DIR/pentestagent/knowledge/embeddings.py"; do
+            if [[ -f "$_f" ]]; then
+                # Replace the default argument default value (the == "text-embedding-3-small" pattern)
+                sed -i                     's|embedding_model: str = "text-embedding-3-small"|embedding_model: str = "ollama/nomic-embed-text"|g;
+                     s|model: str = "text-embedding-3-small"|model: str = "ollama/nomic-embed-text"|g;
+                     s|"text-embedding-3-small"|"ollama/nomic-embed-text"|g' "$_f"                     && (( _patched++ ))
+            fi
+        done
+        # Catch any remaining bare nomic references (no provider prefix → LiteLLM fails)
+        find "$PA_DIR/pentestagent/knowledge" -name "*.py" -exec             sed -i 's|"nomic-embed-text"|"ollama/nomic-embed-text"|g' {} \; 2>/dev/null || true
+        info "Patched $_patched source file(s)."
+
+        # ── Pull nomic-embed-text model ────────────────────────────────────────
+        info "Pulling nomic-embed-text embedding model via Ollama…"
+        # Start Ollama temporarily if needed
+        _pa_started_ollama=0
+        if ! ollama_running; then
+            if is_wsl2; then
+                nohup ollama serve >/dev/null 2>&1 &
+            else
+                sudo systemctl start ollama 2>/dev/null                     || nohup ollama serve >/dev/null 2>&1 &
+            fi
+            _pa_started_ollama=1
+            wait_for_ollama 30
+        fi
+        retry 3 10 ollama pull nomic-embed-text             && info "nomic-embed-text pulled ✔"             || warn "nomic-embed-text pull failed — run manually: ollama pull nomic-embed-text"
+        # Stop temporary Ollama (will be started properly by launcher)
+        if (( _pa_started_ollama )); then
+            pkill -f "ollama serve" 2>/dev/null || true
+        fi
+
+        # ── Write .env file ────────────────────────────────────────────────────
+        info "Writing PentestAgent .env config…"
+        cat > "$PA_ENV" <<PAENV
+# PentestAgent — Ollama local configuration
+# Generated by llm-auto-setup v${SCRIPT_VERSION}
+OPENAI_API_KEY="ollama-local"
+OPENAI_BASE_URL="http://localhost:11434/v1"
+PENTESTAGENT_MODEL="ollama/qwen3:4b-q4_k_m"
+PENTESTAGENT_EMBEDDING_MODEL="ollama/nomic-embed-text"
+PENTESTAGENT_EMBEDDING_PROVIDER="ollama"
+RAG_EMBEDDING_MODEL="ollama/nomic-embed-text"
+RAG_EMBEDDING_PROVIDER="ollama"
+LITELLM_FORCE_PROVIDER="ollama"
+PAENV
+
+        # ── Launcher script ────────────────────────────────────────────────────
+        cat > "$PA_LAUNCH" <<'PALAUNCHER'
+#!/usr/bin/env bash
+# pentestagent-start — launch PentestAgent with local Ollama backend
+set -uo pipefail
+
+PA_DIR="$HOME/pentestagent"
+PA_VENV="$PA_DIR/venv"
+BIN_DIR="$HOME/.local/bin"
+CONFIG="$HOME/.config/local-llm/selected_model.conf"
+
+[[ ! -d "$PA_VENV" ]] && {
+    echo "ERROR: PentestAgent not installed. Re-run: llm-setup → option 8"
+    exit 1
+}
+
+# Read active Ollama tag from config
+ACTIVE_TAG="qwen3:4b-q4_k_m"
+[[ -f "$CONFIG" ]] && {
+    _t=$(grep "^OLLAMA_TAG=" "$CONFIG" | head -1 | cut -d'"' -f2)
+    [[ -n "$_t" ]] && ACTIVE_TAG="$_t"
+}
+
+# ── Ensure Ollama is running ──────────────────────────────────────────────────
+_ollama_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+
+STARTED_OLLAMA=0
+if ! _ollama_up; then
+    echo "→ Starting Ollama…"
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        [[ -x "$BIN_DIR/ollama-start" ]] && "$BIN_DIR/ollama-start"             || nohup ollama serve >/dev/null 2>&1 &
+    else
+        sudo systemctl start ollama 2>/dev/null             || nohup ollama serve >/dev/null 2>&1 &
+    fi
+    STARTED_OLLAMA=1
+    for _i in {1..20}; do _ollama_up && break; sleep 1; done
+    _ollama_up || { echo "ERROR: Ollama failed to start."; exit 1; }
+fi
+
+# ── Ensure embedding model is available ───────────────────────────────────────
+if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+    echo "→ Pulling nomic-embed-text (needed for RAG)…"
+    ollama pull nomic-embed-text || echo "  WARNING: nomic-embed-text pull failed — RAG may not work."
+fi
+
+# ── Ensure generation model is loaded ─────────────────────────────────────────
+# PentestAgent expects qwen3:4b-q4_k_m by default; use a smaller tag if needed
+if ! ollama list 2>/dev/null | grep -q "qwen3:4b"; then
+    echo "→ Note: qwen3:4b-q4_k_m not found in Ollama library."
+    echo "  PentestAgent will use: $ACTIVE_TAG"
+    # Patch .env to use active model
+    sed -i "s|PENTESTAGENT_MODEL=.*|PENTESTAGENT_MODEL="ollama/${ACTIVE_TAG}"|"         "$PA_DIR/.env" 2>/dev/null || true
+fi
+
+# ── Clean stale vector store (avoids embedding dimension mismatch) ─────────────
+rm -rf ~/.cache/pentestagent/ "$PA_DIR/knowledge/vector_store/" 2>/dev/null || true
+
+cd "$PA_DIR"
+
+echo ""
+echo "  ╔══════════════════════════════════════════════════════════════╗"
+echo "  ║            🔒  PENTESTAGENT  —  LOCAL AI PENTESTER         ║"
+echo "  ║  Generation : qwen3:4b-q4_k_m (or active model)            ║"
+echo "  ║  Embeddings : nomic-embed-text → RAG enabled               ║"
+echo "  ║  Backend    : Ollama @ localhost:11434 (fully local)        ║"
+echo "  ║                                                              ║"
+echo "  ║  TUI commands:                                              ║"
+echo "  ║    /agent "task"   — autonomous single-agent mode           ║"
+echo "  ║    /crew  "task"   — multi-agent crew mode                  ║"
+echo "  ║    /tools          — list available tools                   ║"
+echo "  ║    /report         — generate findings report               ║"
+echo "  ╚══════════════════════════════════════════════════════════════╝"
+echo ""
+
+# ── Export env and launch ──────────────────────────────────────────────────────
+set -a
+[[ -f "$PA_DIR/.env" ]] && source "$PA_DIR/.env"
+export OPENAI_API_KEY="ollama-local"
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+export PENTESTAGENT_EMBEDDING_MODEL="ollama/nomic-embed-text"
+export PENTESTAGENT_EMBEDDING_PROVIDER="ollama"
+export RAG_EMBEDDING_MODEL="ollama/nomic-embed-text"
+export RAG_EMBEDDING_PROVIDER="ollama"
+export LITELLM_FORCE_PROVIDER="ollama"
+set +a
+
+source "$PA_VENV/bin/activate"
+exec pentestagent "$@"
+PALAUNCHER
+        chmod +x "$PA_LAUNCH"
+
+        # ── Register alias ─────────────────────────────────────────────────────
+        grep -q "pentestagent-start" "$ALIAS_FILE" 2>/dev/null             || echo "alias pentest='$PA_LAUNCH'" >> "$ALIAS_FILE"
+
+        info "PentestAgent installed."
+        info "  Launch: pentest   (or: pentestagent-start)"
+        info "  Dir:    $PA_DIR"
+        info "  Model:  qwen3:4b-q4_k_m (gen) + nomic-embed-text (RAG)"
+        info "  Docs:   github.com/vishnupriyavr/pentest-agent"
+        warn "  LEGAL: Only test systems you own or have written permission to test."
     fi
 fi
 
@@ -3112,6 +3335,10 @@ echo ""
 echo -e "${_C}  ── AI coding agents ───────────────────────────────────────────────${_N}"
 echo -e "   ${_Y}claude${_N}           Claude Code (Anthropic, cloud — needs API key)"
 echo -e "   ${_Y}codex-agent${_N}      OpenAI Codex (cloud — needs API key)"
+echo ""
+echo -e "${_C}  ── Security / Pentesting ───────────────────────────────────────────${_N}"
+echo -e "   ${_Y}pentest${_N}          PentestAgent AI — RAG + multi-agent pentesting (fully local)"
+echo -e "   ${_Y}pentestagent-start${_N}  Full launcher with Ollama + nomic embeddings"
 echo ""
 
 echo -e "${_C}  ── WSL2 quickstart ────────────────────────────────────────────────${_N}"
