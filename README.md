@@ -30,10 +30,10 @@ Automatically detects your hardware (CPU, NVIDIA, AMD, Apple), picks the best GG
 
 ```bash
 # Download and run
-curl -fsSL https://raw.githubusercontent.com/yourname/llm-auto-setup/main/llm-auto-setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mettbrot0815/llm-auto-setup/main/llm-auto-setup.sh | bash
 
 # Or clone and run
-git clone https://github.com/yourname/llm-auto-setup.git
+git clone https://github.com/mettbrot0815/llm-auto-setup.git
 cd llm-auto-setup && bash llm-auto-setup.sh
 ```
 
