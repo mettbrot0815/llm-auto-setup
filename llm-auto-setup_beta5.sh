@@ -1,1718 +1,1948 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-#  llm-auto-setup.sh  v4.0.0
-#  Zero-cloud local LLM stack installer — Debian/Ubuntu/WSL2
-#  Installs: Ollama · llama-cpp-python · Open WebUI · Neural Terminal
-#            Open Interpreter · Aider · optional tools
-# ─────────────────────────────────────────────────────────────────────────────
-#  ██╗      ██████╗  ██████╗ █████╗ ██╗         ██╗     ██╗     ███╗   ███╗
-#  ██║     ██╔═══██╗██╔════╝██╔══██╗██║        ██╔╝     ██║     ████╗ ████║
-#  ██║     ██║   ██║██║     ███████║██║       ██╔╝      ██║     ██╔████╔██║
-#  ██║     ██║   ██║██║     ██╔══██║██║      ██╔╝       ██║     ██║╚██╔╝██║
-#  ███████╗╚██████╔╝╚██████╗██║  ██║███████╗██╔╝        ███████╗██║ ╚═╝ ██║
-#  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝         ╚══════╝╚═╝     ╚═╝
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+#
+#   ██╗      ███████╗  ███████╗ ██████╗ ██╗         ██╗     ██╗     ███╗   ██╗
+#   ██║     ██╔═══██╗██╔════╝██╔═══██╗██║        ██╔╝     ██║     ████╗  ██║
+#   ██║     ██║   ██║██║     ██║   ██║██║       ██╔╝      ██║     ██╔██╗ ██║
+#   ██║     ██║   ██║██║     ██║   ██║██║      ██╔╝       ██║     ██║╚██╗██║
+#   ███████╗╚██████╔╝╚██████╗╚██████╔╝███████╗██╔╝        ███████╗██║ ╚████║
+#   ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝╚═╝         ╚══════╝╚═╝  ╚═══╝
+#
+#   AUTO-SETUP  v6.0.0  ·  Universal Edition
+#   ────────────────────────────────────────────────────────────────────────────
+#   Scans hardware → picks best model → installs the full stack.
+#   No HuggingFace token required. All models from public bartowski repos.
+#
+#   Supports: Ubuntu 22.04/24.04 · Debian 12 · Linux Mint 21+ · Pop!_OS
+#             WSL2 · CPU-only · NVIDIA CUDA · AMD ROCm · Intel Arc
+#   ────────────────────────────────────────────────────────────────────────────
+#   Core stack:  Ollama v0.12.3 (LOCKED) · llama-cpp-python
+#                Open WebUI (port 8080)  · Neural Terminal (port 8090)
+#                cowork (Open Interpreter) · aider
+#   Optional:    Claude Code · OpenAI Codex · PentestAgent
+#                tmux · CLI tools · GPU monitor
+#   ────────────────────────────────────────────────────────────────────────────
+#   ⚠  Ollama is locked to v0.12.3 — v0.12.4+ breaks GPU offload on RTX 30xx
+# =============================================================================
 
 set -uo pipefail
 
-# ── Constants & Paths ────────────────────────────────────────────────────────
-SCRIPT_VERSION="4.0.0"
-SCRIPT_INSTALL_PATH="$HOME/.config/local-llm/llm-auto-setup.sh"
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+readonly SCRIPT_VERSION="6.0.0"
+readonly SCRIPT_INSTALL_PATH="$HOME/.config/local-llm/llm-auto-setup.sh"
+readonly LOG_FILE="$HOME/llm-auto-setup-$(date +%Y%m%d-%H%M%S).log"
 
-LOG_FILE="$HOME/llm-auto-setup-$(date +%Y%m%d-%H%M%S).log"
-VENV_DIR="$HOME/.local/share/llm-venv"
-OWUI_VENV="$HOME/.local/share/open-webui-venv"
-OI_VENV="$HOME/.local/share/open-interpreter-venv"
-AI_VENV="$HOME/.local/share/aider-venv"
-MODEL_BASE="$HOME/local-llm-models"
-OLLAMA_MODELS="$MODEL_BASE/ollama"
-GGUF_MODELS="$MODEL_BASE/gguf"
-TEMP_DIR="$MODEL_BASE/temp"
-BIN_DIR="$HOME/.local/bin"
-CONFIG_DIR="$HOME/.config/local-llm"
-GUI_DIR="$HOME/.local/share/llm-webui"
-MODEL_CONFIG="$CONFIG_DIR/selected_model.conf"
-ALIAS_FILE="$HOME/.local_llm_aliases"
-WORK_DIR="$HOME/work"
-PKG_CACHE_DIR="$HOME/.cache/llm-setup"
+# Paths
+readonly VENV_DIR="$HOME/.local/share/llm-venv"
+readonly OWUI_VENV="$HOME/.local/share/open-webui-venv"
+readonly OI_VENV="$HOME/.local/share/open-interpreter-venv"
+readonly AI_VENV="$HOME/.local/share/aider-venv"
+readonly MODEL_BASE="$HOME/local-llm-models"
+readonly OLLAMA_MODELS="$MODEL_BASE/ollama"
+readonly GGUF_MODELS="$MODEL_BASE/gguf"
+readonly TEMP_DIR="$MODEL_BASE/temp"
+readonly BIN_DIR="$HOME/.local/bin"
+readonly CONFIG_DIR="$HOME/.config/local-llm"
+readonly GUI_DIR="$HOME/.local/share/llm-webui"
+readonly MODEL_CONFIG="$CONFIG_DIR/selected_model.conf"
+readonly ALIAS_FILE="$HOME/.local_llm_aliases"
+readonly WORK_DIR="$HOME/work"
+readonly PKG_CACHE_DIR="$HOME/.cache/llm-setup"
 
-# ── Suppress interactive prompts ─────────────────────────────────────────────
+# Ollama locked to 0.12.3 — RTX 3060 / Ampere GPU offload regression in 0.12.4+
+readonly OLLAMA_LOCKED_VER="0.12.3"
+readonly OLLAMA_LOCKED_URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_LOCKED_VER}/ollama-linux-amd64"
+
+# Environment
 export DEBIAN_FRONTEND=noninteractive
 export APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 export PIP_CACHE_DIR="$PKG_CACHE_DIR/pip"
 export npm_config_cache="$PKG_CACHE_DIR/npm"
 
-# ── Colors ───────────────────────────────────────────────────────────────────
+mkdir -p "$PKG_CACHE_DIR/pip" "$PKG_CACHE_DIR/npm" "$HOME"
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# =============================================================================
+# COLORS  (auto-disabled when stdout is not a tty)
+# =============================================================================
 if [[ -t 1 ]]; then
-    RED='\033[0;31m';    GREEN='\033[0;32m';   YELLOW='\033[1;33m'
-    BLUE='\033[0;34m';   CYAN='\033[0;36m';    MAGENTA='\033[0;35m'
-    BOLD='\033[1m';      DIM='\033[2m';         NC='\033[0m'
-    ACCENT='\033[38;5;39m'
-    ACCENT2='\033[38;5;82m'
-    MUTED='\033[38;5;240m'
-    WARN_COL='\033[38;5;214m'
-    ERR_COL='\033[38;5;196m'
-    STEP_COL='\033[38;5;105m'
+    BOLD='\033[1m';     DIM='\033[2m';      NC='\033[0m'
+    RED='\033[0;31m';   GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'
+    ACCENT='\033[38;5;39m'    # sky-blue    — primary highlight
+    ACCENT2='\033[38;5;82m'   # lime-green  — success
+    MUTED='\033[38;5;240m'    # mid-grey    — secondary text
+    WARN_COL='\033[38;5;214m' # amber       — warnings
+    ERR_COL='\033[38;5;196m'  # red         — errors
+    STEP_COL='\033[38;5;105m' # purple      — step headers
 else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; MAGENTA=''
     BOLD=''; DIM=''; NC=''
+    RED=''; GREEN=''; YELLOW=''; CYAN=''
     ACCENT=''; ACCENT2=''; MUTED=''; WARN_COL=''; ERR_COL=''; STEP_COL=''
 fi
 
 _TW=$(( $(tput cols 2>/dev/null || echo 80) ))
 (( _TW < 60  )) && _TW=60
 (( _TW > 120 )) && _TW=120
-_rule() { local ch="${1:-─}" col="${2:-$MUTED}"; printf "${col}%*s${NC}\n" "$_TW" "" | tr ' ' "$ch"; }
+_rule() { local ch="${1:--}" col="${2:-$MUTED}"; printf "${col}"; printf '%*s' "$_TW" '' | tr ' ' "${ch}"; printf "${NC}\n"; }
 
-# ── Step counter ─────────────────────────────────────────────────────────────
+# =============================================================================
+# LOGGING
+# =============================================================================
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 _STEP_N=0
-_STEP_TOTAL=21
+_STEP_TOTAL=19
 
-# ── UI functions ─────────────────────────────────────────────────────────────
-info()  { echo -e "  ${ACCENT2}✓${NC}  $*"; }
-warn()  { echo -e "  ${WARN_COL}⚠${NC}  ${WARN_COL}$*${NC}"; }
+log()   { printf '%s %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*" >&2 || true; }
+info()  { printf "  ${ACCENT2}✓${NC}  %b\n" "$*"; }
+warn()  { printf "  ${WARN_COL}⚠${NC}  ${WARN_COL}%b${NC}\n" "$*"; log "[WARN]  $*"; }
 error() {
-    echo ""; _rule "═" "${ERR_COL}"
-    echo -e "  ${ERR_COL}${BOLD}✗  ERROR${NC}  $*"
-    echo -e "  ${MUTED}Log: $LOG_FILE${NC}"
-    _rule "═" "${ERR_COL}"; echo ""
+    printf "\n"
+    _rule "═" "${ERR_COL}"
+    printf "  ${ERR_COL}${BOLD}✗  FATAL ERROR${NC}  %b\n" "$*"
+    printf "  ${MUTED}Log: %s${NC}\n" "$LOG_FILE"
+    _rule "═" "${ERR_COL}"
+    log "[ERROR] $*"
     exit 1
 }
+
 step() {
     (( _STEP_N++ )) || true
-    echo ""; _rule "─" "${STEP_COL}"
-    echo -e "${STEP_COL}${BOLD}  STEP ${_STEP_N}/${_STEP_TOTAL}  │  $*${NC}"
+    printf "\n"
+    _rule "─" "${STEP_COL}"
+    printf "${STEP_COL}${BOLD}  STEP %d/%d  │  %b${NC}\n" "$_STEP_N" "$_STEP_TOTAL" "$*"
     _rule "─" "${STEP_COL}"
 }
-highlight() { echo -e "\n${BOLD}${ACCENT}  ◆  $*${NC}"; }
+
+highlight() { printf "\n${BOLD}${ACCENT}  ◇  %b${NC}\n" "$*"; }
+
+# =============================================================================
+# PROGRESS BAR
+# =============================================================================
+_pbar() {
+    [[ ! -t 1 ]] && return
+    local pct="${1:-0}" label="${2:-}" filled empty bar emp
+    (( pct > 100 )) && pct=100
+    (( pct < 0   )) && pct=0
+    filled=$(( pct * 40 / 100 ))
+    empty=$(( 40 - filled ))
+    bar="$(printf '%*s' "$filled" '' | tr ' ' '█')"
+    emp="$(printf '%*s' "$empty"  '' | tr ' ' '░')"
+    printf "\r  ${ACCENT}[${ACCENT2}%s%s${ACCENT}]${NC} ${BOLD}%3d%%${NC}  %-30s" \
+           "$bar" "$emp" "$pct" "${label:0:30}"
+}
+_pbar_done() { [[ -t 1 ]] && printf "\n"; }
+
+# Long-running pip install: background progress ticker (0→95 % over duration)
+_pip_with_ticker() {
+    local label="$1"; shift
+    local pip_cmd=("$@")
+    (
+        local p=2
+        while kill -0 "$$" 2>/dev/null; do
+            _pbar "$p" "$label"
+            p=$(( p >= 95 ? 95 : p + 1 ))
+            sleep 6
+        done
+    ) &
+    local _tick=$!
+    "${pip_cmd[@]}" >> "$LOG_FILE" 2>&1
+    local _rc=$?
+    kill "$_tick" 2>/dev/null; wait "$_tick" 2>/dev/null || true
+    _pbar 100 "$label"; _pbar_done
+    return $_rc
+}
+
+# Download with live percentage (aria2c preferred, curl fallback, wget last)
+_download() {
+    local url="$1" dest="$2" label="${3:-Downloading}"
+    info "$label → $(basename "$dest")"
+
+    # skip if already downloaded and non-empty
+    if [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -gt 1048576 ]]; then
+        info "Already on disk ($(du -sh "$dest" | cut -f1)) — skipping download."
+        return 0
+    fi
+
+    if command -v aria2c &>/dev/null; then
+        aria2c --split=8 --max-connection-per-server=8 \
+               --min-split-size=20M --continue=true \
+               --file-allocation=none \
+               --console-log-level=warn \
+               -o "$(basename "$dest")" -d "$(dirname "$dest")" "$url" 2>&1 | \
+            grep -E '^Download|^\[#|%' | while IFS= read -r _l; do
+                local _p; _p=$(printf '%s' "$_l" | grep -oP '\d+%' | tr -d '%' | tail -1 || true)
+                [[ -n "$_p" ]] && _pbar "$_p" "$label"
+            done
+        local _rc="${PIPESTATUS[0]:-0}"
+        _pbar_done
+        (( _rc == 0 )) && return 0
+        warn "aria2c failed (rc=$_rc) — trying curl."
+    fi
+
+    if command -v curl &>/dev/null; then
+        curl -L -C - --fail --progress-bar -o "$dest" "$url" 2>&1 | \
+            while IFS= read -r _l; do
+                local _p; _p=$(printf '%s' "$_l" | grep -oP '^\s*\K\d+(?=\.\d+%)' | head -1 || true)
+                [[ -n "$_p" ]] && _pbar "$_p" "$label"
+            done
+        local _rc="${PIPESTATUS[0]:-1}"
+        _pbar_done
+        (( _rc == 0 )) && return 0
+        warn "curl failed (rc=$_rc) — trying wget."
+    fi
+
+    if command -v wget &>/dev/null; then
+        wget -c --progress=dot:mega -O "$dest" "$url" 2>&1 | \
+            while IFS= read -r _l; do
+                local _p; _p=$(printf '%s' "$_l" | grep -oP '\d+%' | tr -d '%' | tail -1 || true)
+                [[ -n "$_p" ]] && _pbar "$_p" "$label"
+            done
+        local _rc="${PIPESTATUS[0]:-1}"
+        _pbar_done
+        (( _rc == 0 )) && return 0
+    fi
+
+    error "All download methods failed for: $url"
+}
+
+# retry <attempts> <delay> <cmd...>
+retry() {
+    local n="$1" d="$2"; shift 2
+    local i=1
+    while true; do
+        "$@" && return 0
+        (( i >= n )) && { warn "Failed after $n attempts: $*"; return 1; }
+        warn "Attempt $i/$n failed — retrying in ${d}s…"
+        sleep "$d"; (( i++ ))
+    done
+}
+
+# apt install list with per-package progress bar (sudo-aware)
+_apt_install() {
+    local pkgs=("$@") total=${#@} idx=0 pkg
+    (( total == 0 )) && return 0
+    for pkg in "${pkgs[@]}"; do
+        (( idx++ ))
+        _pbar $(( idx * 100 / total )) "apt: $pkg"
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends "$pkg" \
+            >> "$LOG_FILE" 2>&1 \
+            || { _pbar_done; warn "apt: $pkg failed (non-fatal)"; }
+    done
+    _pbar_done
+}
+
+# ask_yes_no <prompt> → 0=yes 1=no
 ask_yes_no() {
-    [[ ! -t 0 ]] && { warn "Non-interactive — treating '$1' as No."; return 1; }
+    local ans=""
+    if [[ ! -t 0 ]]; then warn "Non-interactive — answering No for: $1"; return 1; fi
     printf "  ${ACCENT}?${NC}  ${BOLD}%s${NC} ${MUTED}[y/N]${NC} " "$1"
-    read -r -n 1 ans; echo
+    read -r -n1 ans; printf "\n"
     [[ "$ans" =~ ^[Yy]$ ]]
 }
 
-# ── Spinner ───────────────────────────────────────────────────────────────────
-_SPIN_PID=""
-spin_start() {
-    local msg="${1:-Working…}"
-    [[ -t 1 ]] || { echo -e "  …  $msg"; _SPIN_PID=""; return; }
-    ( local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏') i=0
-      while true; do
-          printf "\r  ${ACCENT}%s${NC}  %s " "${frames[$((i % 10))]}" "$msg"
-          (( i++ )); sleep 0.08
-      done ) &
-    _SPIN_PID=$!
-}
-spin_stop() {
-    local rc="${1:-0}"
-    [[ -n "${_SPIN_PID:-}" ]] && { kill "$_SPIN_PID" 2>/dev/null; wait "$_SPIN_PID" 2>/dev/null
-        _SPIN_PID=""; printf "\r%*s\r" "$_TW" ""; }
-    (( rc == 0 )) && echo -e "  ${ACCENT2}✓${NC}  Done" \
-                  || echo -e "  ${WARN_COL}⚠${NC}  Finished with warnings (rc=$rc)"
-    return "$rc"
-}
-
-# ── Logging: tee all output to log file ──────────────────────────────────────
-mkdir -p "$(dirname "$LOG_FILE")"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-# ── Welcome banner ───────────────────────────────────────────────────────────
-show_banner() {
-    clear
-    echo ""
-    echo -e "${ACCENT}${BOLD}  ██╗      ██████╗  ██████╗ █████╗ ██╗         ██╗     ██╗     ███╗   ███╗${NC}"
-    echo -e "${ACCENT}${BOLD}  ██║     ██╔═══██╗██╔════╝██╔══██╗██║        ██╔╝     ██║     ████╗ ████║${NC}"
-    echo -e "${ACCENT}${BOLD}  ██║     ██║   ██║██║     ███████║██║       ██╔╝      ██║     ██╔████╔██║${NC}"
-    echo -e "${ACCENT}${BOLD}  ██║     ██║   ██║██║     ██╔══██║██║      ██╔╝       ██║     ██║╚██╔╝██║${NC}"
-    echo -e "${ACCENT}${BOLD}  ███████╗╚██████╔╝╚██████╗██║  ██║███████╗██╔╝        ███████╗██║ ╚═╝ ██║${NC}"
-    echo -e "${ACCENT}${BOLD}  ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝         ╚══════╝╚═╝     ╚═╝${NC}"
-    echo ""
-    _rule "═"
-    printf "  ${BOLD}%-20s${NC}  ${MUTED}%s${NC}\n" \
-        "Local LLM Installer" "v${SCRIPT_VERSION} — Zero cloud dependency"
-    printf "  ${MUTED}%-20s  %s${NC}\n" \
-        "Debian/Ubuntu/WSL2" "100% local inference after install"
-    _rule "═"
-    echo ""
-    echo -e "  ${BOLD}This installer will set up:${NC}"
-    echo -e "  ${ACCENT2}•${NC}  Ollama          — Model server + GPU management"
-    echo -e "  ${ACCENT2}•${NC}  llama-cpp-python — Direct GGUF inference"
-    echo -e "  ${ACCENT2}•${NC}  Open WebUI      — Web chat interface (port 8080)"
-    echo -e "  ${ACCENT2}•${NC}  Neural Terminal  — Lightweight HTML chat (port 8090)"
-    echo -e "  ${ACCENT2}•${NC}  Open Interpreter — Autonomous AI coding (local)"
-    echo -e "  ${ACCENT2}•${NC}  Aider           — Git-integrated pair programmer"
-    echo -e "  ${ACCENT2}•${NC}  Helper commands — llm-help, llm-switch, llm-add, …"
-    echo ""
-    echo -e "  ${MUTED}Log file: $LOG_FILE${NC}"
-    echo ""
-    _rule "─"
-    echo ""
-}
-
-# ── Utility functions ─────────────────────────────────────────────────────────
-retry() {
-    local n="$1" delay="$2"; shift 2
-    local i=0
-    while (( i < n )); do
-        "$@" && return 0
-        (( i++ ))
-        warn "Retry $i/$n failed. Waiting ${delay}s…"
-        sleep "$delay"
-    done
-    return 1
-}
-
-is_wsl2() { grep -qi microsoft /proc/version 2>/dev/null; }
-
-get_distro_id() {
-    local _id=""
-    [[ -f /etc/os-release ]] && _id=$(grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-    echo "${_id:-unknown}"
-}
-
-get_distro_codename() {
-    local _cn=""
-    [[ -f /etc/os-release ]] && _cn=$(grep '^VERSION_CODENAME=' /etc/os-release | cut -d= -f2 | tr -d '"')
-    echo "${_cn:-unknown}"
-}
+is_wsl2()        { grep -qi microsoft /proc/version 2>/dev/null; }
+get_distro_id()  { grep -m1 '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]' || echo unknown; }
+get_codename()   { grep -m1 '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || lsb_release -sc 2>/dev/null || echo unknown; }
 
 ollama_running() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
-
-wait_for_ollama() {
+wait_ollama() {
     local max="${1:-20}" i=0
     while (( i < max )); do
         ollama_running && return 0
-        sleep 1
-        (( i++ ))
+        sleep 1; (( i++ ))
     done
     return 1
 }
-
 start_ollama_if_needed() {
     ollama_running && return 0
+    info "Starting Ollama…"
     if is_wsl2; then
-        [[ -x "$BIN_DIR/ollama-start" ]] && "$BIN_DIR/ollama-start" \
-            || nohup ollama serve >/dev/null 2>&1 &
+        nohup ollama serve > "$HOME/.ollama.log" 2>&1 &
     else
-        sudo systemctl start ollama 2>/dev/null \
-            || nohup ollama serve >/dev/null 2>&1 &
+        sudo systemctl start ollama 2>/dev/null || nohup ollama serve > "$HOME/.ollama.log" 2>&1 &
     fi
-    wait_for_ollama 20 || warn "Ollama didn't respond within 20s"
+    wait_ollama 25 || warn "Ollama didn't respond in 25s."
 }
 
-_ver_gt() { [[ "$(printf '%s\n%s' "$1" "$2" | sort -V | tail -1)" == "$1" && "$1" != "$2" ]]; }
-_ver_ge() { [[ "$(printf '%s\n%s' "$1" "$2" | sort -V | tail -1)" == "$1" ]]; }
+# ensure a venv exists; creates/heals it if missing or broken
+_ensure_venv() {
+    local venv="$1"
+    if [[ ! -x "$venv/bin/python3" ]]; then
+        info "Creating venv: $(basename "$venv")"
+        "${PYTHON_BIN:-python3}" -m venv --clear "$venv" >> "$LOG_FILE" 2>&1 \
+            || error "Failed to create venv: $venv"
+        "$venv/bin/python3" -m ensurepip --upgrade >> "$LOG_FILE" 2>&1 || true
+        "$venv/bin/pip" install --quiet --upgrade pip "setuptools>=70" wheel >> "$LOG_FILE" 2>&1 || true
+    fi
+}
 
-# ── Package cache dirs ────────────────────────────────────────────────────────
-mkdir -p "$PKG_CACHE_DIR/pip" "$PKG_CACHE_DIR/npm"
+# =============================================================================
+# WELCOME BANNER
+# =============================================================================
+_print_banner() {
+    clear 2>/dev/null || true
+    printf "\n${ACCENT}${BOLD}"
+    echo "  ██╗      ███████╗  ███████╗ ██████╗ ██╗         ██╗     ██╗     ███╗   ██╗"
+    echo "  ██║     ██╔═══██╗██╔════╝██╔═══██╗██║        ██╔╝     ██║     ████╗  ██║"
+    echo "  ██║     ██║   ██║██║     ██║   ██║██║       ██╔╝      ██║     ██╔██╗ ██║"
+    echo "  ██║     ██║   ██║██║     ██║   ██║██║      ██╔╝       ██║     ██║╚██╗██║"
+    echo "  ███████╗╚██████╔╝╚██████╗╚██████╔╝███████╗██╔╝        ███████╗██║ ╚████║"
+    echo "  ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝╚═╝         ╚══════╝╚═╝  ╚═══╝"
+    printf "${NC}\n"
+    _rule "─" "$MUTED"
+    printf "  ${BOLD}%-28s${NC}  ${MUTED}v%s  ·  Universal Edition${NC}\n" "Local LLM Auto-Setup" "$SCRIPT_VERSION"
+    printf "  ${MUTED}Ubuntu/Debian/WSL2  ·  NVIDIA CUDA · AMD ROCm · CPU-only · Intel Arc${NC}\n"
+    _rule "─" "$MUTED"
+    printf "\n"
+    printf "  ${MUTED}Core:${NC}  Ollama v%s (locked) · Open WebUI · Neural Terminal\n" "$OLLAMA_LOCKED_VER"
+    printf "  ${MUTED}      ${NC}  cowork (Open Interpreter) · aider\n"
+    printf "  ${MUTED}Opt: ${NC}  Claude Code · OpenAI Codex · PentestAgent · CLI tools\n"
+    printf "\n"
+    printf "  ${WARN_COL}⚠  Ollama locked to v%s — v0.12.4+ breaks GPU offload on RTX 30xx${NC}\n" "$OLLAMA_LOCKED_VER"
+    printf "\n"
+    _rule "─" "$MUTED"
+    printf "  ${MUTED}Log:  %s${NC}\n" "$LOG_FILE"
+    _rule "─" "$MUTED"
+    printf "\n"
+}
+_print_banner
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN — call show_banner then run steps
-# ─────────────────────────────────────────────────────────────────────────────
-show_banner
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — PRE-FLIGHT CHECKS
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# STEP 1 — PRE-FLIGHT
+# =============================================================================
 step "Pre-flight checks"
 
-# Reject root
-(( EUID == 0 )) && error "Do not run this script as root. Run as a regular user with sudo access."
+[[ "${EUID:-0}" -eq 0 ]] && error "Do not run as root. Use a normal user with sudo."
+command -v sudo &>/dev/null || error "sudo not found. Install it first."
 
-# Require sudo
-command -v sudo &>/dev/null || error "'sudo' is required but not found. Install it first."
-
-# Architecture check
-_arch=$(uname -m)
-case "$_arch" in
-    x86_64) info "Architecture: x86_64 ✔" ;;
-    aarch64) warn "Architecture: aarch64 (ARM64) — GPU inference may be limited." ;;
-    *) warn "Architecture: $_arch — untested, proceeding anyway." ;;
+# Architecture
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH" in
+    x86_64)  info "Architecture: x86_64 ✓" ;;
+    aarch64) warn "ARM64 detected — CUDA pre-built wheels unavailable; source build will be used." ;;
+    *)       warn "Untested architecture: $HOST_ARCH — proceeding anyway." ;;
 esac
 
-# Distro check
-_distro_id=$(get_distro_id)
-_distro_cn=$(get_distro_codename)
-info "Distro: ${_distro_id} (${_distro_cn})"
-case "$_distro_id" in
-    ubuntu|debian|linuxmint|pop|kali|parrot) ;;
-    *) warn "Distro '$_distro_id' is not officially supported — may still work." ;;
+# Distro detection
+DISTRO_ID=$(get_distro_id)
+DISTRO_CODENAME=$(get_codename)
+UBUNTU_VER=$(lsb_release -rs 2>/dev/null \
+    || grep -oP '(?<=^VERSION_ID=")[0-9.]+' /etc/os-release 2>/dev/null \
+    || echo "unknown")
+info "Distro: $DISTRO_ID $UBUNTU_VER ($DISTRO_CODENAME) on $HOST_ARCH"
+case "$DISTRO_ID" in
+    ubuntu|debian|linuxmint|pop|neon|elementary|zorin|kali|parrot) ;;
+    *) warn "Distro '$DISTRO_ID' not officially tested — apt paths assumed." ;;
 esac
 
-# sudo keepalive
-echo ""
-echo -e "  ${ACCENT}❯${NC}  ${BOLD}Administrator access required${NC}"
-echo -e "  ${MUTED}    apt · systemd · GPU drivers${NC}"
-echo ""
+# Single sudo prompt + keepalive
+printf "\n  ${ACCENT}❯${NC}  ${BOLD}Administrator access required${NC} (apt · systemd · GPU drivers)\n\n"
 sudo -v || error "sudo authentication failed."
 ( while true; do sleep 50; sudo -v 2>/dev/null; done ) &
-SUDO_KEEPALIVE_PID=$!
-trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT INT TERM
+readonly SUDO_KEEPALIVE_PID=$!
+trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null; trap - EXIT INT TERM' EXIT INT TERM
+info "sudo keepalive active."
 
-# Self-update check
-if [[ -f "$SCRIPT_INSTALL_PATH" ]]; then
-    _installed_ver=$(grep '^SCRIPT_VERSION=' "$SCRIPT_INSTALL_PATH" 2>/dev/null \
-        | head -1 | cut -d'"' -f2 || echo "0.0.0")
-    if [[ "$_installed_ver" != "$SCRIPT_VERSION" ]]; then
-        warn "Installed version: $_installed_ver | This version: $SCRIPT_VERSION"
-        if ask_yes_no "Update installed script to v${SCRIPT_VERSION}?"; then
-            mkdir -p "$CONFIG_DIR"
-            cp "$0" "$SCRIPT_INSTALL_PATH"
-            chmod +x "$SCRIPT_INSTALL_PATH"
-            info "Script updated. Re-executing…"
-            exec bash "$SCRIPT_INSTALL_PATH" "$@"
-        fi
-    fi
+# Internet check
+if curl -fsSL --max-time 5 https://huggingface.co >/dev/null 2>&1 \
+    || curl -fsSL --max-time 5 https://pypi.org >/dev/null 2>&1; then
+    info "Internet: reachable"
+else
+    warn "Internet appears unreachable — downloads may fail."
 fi
 
-info "Pre-flight checks passed."
+info "Pre-flight complete."
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # STEP 2 — HARDWARE DETECTION
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 step "Hardware detection"
 
-# ── CPU ───────────────────────────────────────────────────────────────────────
-CPU_MODEL=$(grep '^model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ *//' || echo "Unknown")
+# CPU
+CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "Unknown CPU")
 CPU_THREADS=$(nproc 2>/dev/null || echo 4)
-HW_THREADS=$(( CPU_THREADS < 16 ? CPU_THREADS : 16 ))
+HW_THREADS=$(( CPU_THREADS > 16 ? 16 : CPU_THREADS ))
 
-# ── RAM ───────────────────────────────────────────────────────────────────────
-TOTAL_RAM_GB=$(awk '/MemTotal/{printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 4)
-AVAIL_RAM_GB=$(awk '/MemAvailable/{printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 2)
+CPU_FLAGS=$(grep -m1 '^flags\|^Features' /proc/cpuinfo 2>/dev/null || echo "")
+HAS_AVX512=0; [[ "$CPU_FLAGS" =~ (^| )avx512f($| ) ]] && HAS_AVX512=1
+HAS_AVX2=0;   [[ "$CPU_FLAGS" =~ (^| )avx2($| )   ]] && HAS_AVX2=1
+HAS_AVX=0;    [[ "$CPU_FLAGS" =~ (^| )avx($| )    ]] && HAS_AVX=1
+HAS_NEON=0;   [[ "$HOST_ARCH" == "aarch64"         ]] && HAS_NEON=1
 
-# ── GPU ───────────────────────────────────────────────────────────────────────
-HAS_GPU=0
-HAS_NVIDIA=0
-HAS_AMD_GPU=0
-HAS_INTEL_GPU=0
-GPU_NAME="None"
-GPU_VRAM_GB=0
-GPU_VRAM_MIB=0
-DRIVER_VER=""
-CUDA_VER_SMI=""
+# RAM
+TOTAL_RAM_KB=$(grep MemTotal     /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 4194304)
+AVAIL_RAM_KB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 2097152)
+TOTAL_RAM_GB=$(( TOTAL_RAM_KB / 1024 / 1024 ))
+AVAIL_RAM_GB=$(( AVAIL_RAM_KB / 1024 / 1024 ))
+(( TOTAL_RAM_GB < 1 )) && TOTAL_RAM_GB=4
+(( AVAIL_RAM_GB < 1 )) && AVAIL_RAM_GB=2
 
-# NVIDIA detection
+# GPU — NVIDIA
+HAS_NVIDIA=0; HAS_AMD=0; HAS_INTEL=0; HAS_GPU=0
+GPU_NAME="None"; GPU_VRAM_MIB=0; GPU_VRAM_GB=0
+DRIVER_VER="N/A"; CUDA_VER_SMI=""
+
 if command -v nvidia-smi &>/dev/null; then
-    _nv_out=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || true)
-    if [[ -n "$_nv_out" ]]; then
+    _best=0
+    while IFS= read -r _mib; do
+        _mib="${_mib// /}"
+        [[ "$_mib" =~ ^[0-9]+$ ]] && (( _mib > _best )) && _best=$_mib
+    done < <(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true)
+    _cnt=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo 1)
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "NVIDIA GPU")
+    (( _cnt > 1 )) && GPU_NAME="${_cnt}x ${GPU_NAME}"
+    DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo "N/A")
+    CUDA_VER_SMI=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -1 || echo "")
+    if (( _best > 500 )); then
         HAS_NVIDIA=1; HAS_GPU=1
-        GPU_NAME=$(echo "$_nv_out" | cut -d, -f1 | sed 's/^ *//')
-        _vram_str=$(echo "$_nv_out" | cut -d, -f2 | sed 's/^ *//')
-        GPU_VRAM_MIB=$(echo "$_vram_str" | grep -oP '[0-9]+' | head -1 || echo 0)
+        GPU_VRAM_MIB=$_best
         GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
-        CUDA_VER_SMI=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9.]+' | head -1 || echo "")
-        DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo "")
     fi
+    unset _best _cnt
 fi
 
-# AMD detection
+# GPU — AMD
 if (( !HAS_NVIDIA )); then
-    if command -v rocminfo &>/dev/null && rocminfo 2>/dev/null | grep -qi 'gfx'; then
-        HAS_AMD_GPU=1; HAS_GPU=1
-        GPU_NAME=$(rocminfo 2>/dev/null | grep 'Marketing Name' | head -1 | cut -d: -f2 | sed 's/^ *//' || echo "AMD GPU")
-        GPU_VRAM_MIB=$(rocminfo 2>/dev/null | grep -i 'memory size' | grep -oP '[0-9]+' | head -1 || echo 0)
-        GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
-    elif lspci 2>/dev/null | grep -iq 'AMD.*Radeon\|Radeon.*AMD'; then
-        HAS_AMD_GPU=1; HAS_GPU=1
-        GPU_NAME=$(lspci 2>/dev/null | grep -i 'AMD.*Radeon\|Radeon' | head -1 | sed 's/.*: //' || echo "AMD Radeon GPU")
+    _best_amd=0
+    for _sf in /sys/class/drm/card*/device/mem_info_vram_total; do
+        [[ -f "$_sf" ]] || continue
+        _b=$(< "$_sf" 2>/dev/null || echo 0)
+        _m=$(( _b / 1024 / 1024 ))
+        (( _m > _best_amd && _m > 512 )) && _best_amd=$_m
+    done
+    if (( _best_amd > 512 )); then
+        GPU_VRAM_MIB=$_best_amd; GPU_VRAM_GB=$(( GPU_VRAM_MIB / 1024 ))
+        HAS_AMD=1; HAS_GPU=1
+        GPU_NAME=$(lspci 2>/dev/null | grep -iE "VGA|Display|3D" | grep -iE "AMD|ATI|Radeon|gfx" \
+                   | head -1 | sed 's/.*: //' | xargs || echo "AMD GPU")
+        DRIVER_VER=$(< /sys/class/drm/card0/device/driver/module/version 2>/dev/null || echo "N/A")
+    fi
+    unset _best_amd _sf _b _m
+fi
+
+# GPU — Intel Arc
+if (( !HAS_NVIDIA && !HAS_AMD )); then
+    if lspci 2>/dev/null | grep -qiE "Intel.*Arc|Intel.*Xe"; then
+        HAS_INTEL=1
+        GPU_NAME=$(lspci 2>/dev/null | grep -iE "Intel.*Arc|Intel.*Xe" | head -1 | sed 's/.*: //' | xargs || echo "Intel Arc")
     fi
 fi
 
-# Intel Arc detection
-if (( !HAS_NVIDIA && !HAS_AMD_GPU )); then
-    if lspci 2>/dev/null | grep -iE 'Intel.*Arc|Intel.*Xe' | grep -qi 'arc\|xe'; then
-        HAS_INTEL_GPU=1; HAS_GPU=1
-        GPU_NAME=$(lspci 2>/dev/null | grep -iE 'Intel.*Arc|Intel.*Xe' | head -1 | sed 's/.*: //' || echo "Intel Arc/Xe GPU")
-        warn "Intel Arc detected — using CPU tiers (Arc compute support is WIP)."
-        HAS_GPU=0  # treat as CPU-only for model selection
+# Disk
+DISK_FREE_GB=$(df -BG "$HOME" 2>/dev/null | awk 'NR==2{gsub("G","",$4); print $4}' || echo 20)
+
+# SIMD string
+_simd="baseline"
+(( HAS_AVX512 )) && _simd="AVX-512 / AVX2 / AVX"
+[[ "$_simd" == "baseline" ]] && (( HAS_AVX2 )) && _simd="AVX2 / AVX"
+[[ "$_simd" == "baseline" ]] && (( HAS_AVX  )) && _simd="AVX"
+[[ "$_simd" == "baseline" ]] && (( HAS_NEON )) && _simd="NEON (ARM64)"
+
+# Hardware summary box
+printf "\n"
+printf "  ${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}\n"
+printf "  ${CYAN}║          HARDWARE SCAN RESULTS                    ║${NC}\n"
+printf "  ${CYAN}╠════════════════════════════════════════════════════════════════╣${NC}\n"
+printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "CPU"      "${CPU_MODEL:0:35}"
+printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "Threads"  "${CPU_THREADS} logical  (build: ${HW_THREADS})"
+printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "SIMD"     "$_simd"
+printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "RAM"      "${TOTAL_RAM_GB} GB total / ${AVAIL_RAM_GB} GB free"
+printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "GPU"      "${GPU_NAME:0:35}"
+if (( HAS_NVIDIA )); then
+    printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "VRAM"   "${GPU_VRAM_GB} GB (${GPU_VRAM_MIB} MiB)"
+    printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "Driver" "${DRIVER_VER}"
+    [[ -n "$CUDA_VER_SMI" ]] && \
+        printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "CUDA SMI" "$CUDA_VER_SMI"
+elif (( HAS_AMD )); then
+    printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "VRAM"   "${GPU_VRAM_GB} GB (${GPU_VRAM_MIB} MiB)"
+    printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "Driver" "${DRIVER_VER}"
+elif (( HAS_INTEL )); then
+    printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "Note"   "Intel Arc — CPU tiers used"
+fi
+printf "  ${CYAN}║${NC}  %-12s  %-35s${CYAN}║${NC}\n" "Disk free" "${DISK_FREE_GB} GB"
+printf "  ${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}\n"
+printf "\n"
+unset _simd
+
+# =============================================================================
+# COMPATIBILITY CHECKS
+# =============================================================================
+printf "  ${BOLD}${ACCENT}Compatibility checks${NC}\n\n"
+_COMPAT_WARN=0
+
+# NVIDIA driver age
+if (( HAS_NVIDIA )); then
+    _dmaj=$(echo "$DRIVER_VER" | cut -d. -f1 2>/dev/null || echo 0)
+    if (( _dmaj > 0 && _dmaj < 450 )); then
+        printf "  ${ERR_COL}✗${NC}  NVIDIA driver %s too old (need ≥450) — run: sudo ubuntu-drivers autoinstall\n" "$DRIVER_VER"
+        (( _COMPAT_WARN++ ))
+    else
+        printf "  ${ACCENT2}✓${NC}  NVIDIA driver %s\n" "$DRIVER_VER"
     fi
+    unset _dmaj
 fi
 
-# Disk free
-DISK_FREE_GB=$(df -BG "$HOME" 2>/dev/null | awk 'NR==2{gsub("G","",$4); print $4}' || echo 0)
+# Ollama version lock warning
+if command -v ollama &>/dev/null; then
+    _ov=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "0.0.0")
+    if [[ "$_ov" != "$OLLAMA_LOCKED_VER" ]]; then
+        printf "  ${WARN_COL}⚠${NC}  Ollama %s detected — will downgrade to %s (RTX 30xx fix)\n" "$_ov" "$OLLAMA_LOCKED_VER"
+        (( _COMPAT_WARN++ ))
+    else
+        printf "  ${ACCENT2}✓${NC}  Ollama %s (locked version)\n" "$_ov"
+    fi
+    unset _ov
+fi
 
-# VRAM headroom
+# zstd
+command -v zstd &>/dev/null \
+    && printf "  ${ACCENT2}✓${NC}  zstd present\n" \
+    || { printf "  ${WARN_COL}⚠${NC}  zstd missing — will be installed before Ollama\n"; (( _COMPAT_WARN++ )); }
+
+# Disk
+(( DISK_FREE_GB < 15 )) \
+    && { printf "  ${WARN_COL}⚠${NC}  Only %d GB free — large model downloads may fail\n" "$DISK_FREE_GB"; (( _COMPAT_WARN++ )); } \
+    || printf "  ${ACCENT2}✓${NC}  Disk: %d GB free\n" "$DISK_FREE_GB"
+
+# WSL2 GPU
+is_wsl2 && printf "  ${WARN_COL}⚠${NC}  WSL2: GPU passthrough requires driver ≥525 and WSL2 kernel ≥5.15\n"
+
+printf "\n"
+(( _COMPAT_WARN == 0 )) \
+    && printf "  ${ACCENT2}✓${NC}  All compatibility checks passed\n\n" \
+    || printf "  ${WARN_COL}⚠${NC}  %d compatibility warning(s) — see above\n\n" "$_COMPAT_WARN"
+unset _COMPAT_WARN
+
+# =============================================================================
+# STEP 3 — MODEL SELECTION
+# =============================================================================
+step "Model selection"
+
 VRAM_HEADROOM_MIB=1400
 VRAM_USABLE_MIB=$(( GPU_VRAM_MIB - VRAM_HEADROOM_MIB ))
 (( VRAM_USABLE_MIB < 0 )) && VRAM_USABLE_MIB=0
 
-# GPU layers function
 gpu_layers_for() {
     local size_gb="$1" num_layers="$2"
     local model_mib=$(( size_gb * 1024 ))
     if (( model_mib <= VRAM_USABLE_MIB )); then
-        echo "-1"
-        return
+        echo "-1"; return
     fi
-    local mib_per_layer=$(( model_mib / num_layers ))
-    (( mib_per_layer < 1 )) && mib_per_layer=1
-    local layers=$(( VRAM_USABLE_MIB / mib_per_layer ))
+    local mib_per=$(( model_mib / num_layers ))
+    (( mib_per < 1 )) && mib_per=1
+    local layers=$(( VRAM_USABLE_MIB / mib_per ))
     (( layers > num_layers )) && layers=$num_layers
-    (( layers < 0 )) && layers=0
+    (( layers < 0 ))          && layers=0
     echo "$layers"
 }
 
-# Batch size based on VRAM
-if   (( GPU_VRAM_GB >= 24 )); then BATCH=2048
-elif (( GPU_VRAM_GB >= 12 )); then BATCH=1024
-elif (( GPU_VRAM_GB >=  8 )); then BATCH=512
-elif (( GPU_VRAM_GB >=  4 )); then BATCH=256
-else                               BATCH=128
-fi
+declare -A M  # chosen model fields
 
-# ── Hardware summary ──────────────────────────────────────────────────────────
-echo ""
-_rule "─"
-printf "  ${BOLD}%-18s${NC}  %s\n"  "CPU"  "$CPU_MODEL"
-printf "  ${BOLD}%-18s${NC}  %s\n"  "Threads"  "${CPU_THREADS} logical / ${HW_THREADS} used"
-printf "  ${BOLD}%-18s${NC}  %s\n"  "RAM"  "${TOTAL_RAM_GB} GB total / ${AVAIL_RAM_GB} GB available"
-printf "  ${BOLD}%-18s${NC}  %s\n"  "Disk free"  "${DISK_FREE_GB} GB"
-if (( HAS_NVIDIA )); then
-    printf "  ${BOLD}%-18s${NC}  %s\n"  "GPU (NVIDIA)" "$GPU_NAME"
-    printf "  ${BOLD}%-18s${NC}  %s MiB (%s GB usable)\n"  "VRAM"  "$GPU_VRAM_MIB"  "$(( VRAM_USABLE_MIB / 1024 ))"
-    [[ -n "$CUDA_VER_SMI" ]] && printf "  ${BOLD}%-18s${NC}  %s\n"  "CUDA (driver)"  "$CUDA_VER_SMI"
-elif (( HAS_AMD_GPU )); then
-    printf "  ${BOLD}%-18s${NC}  %s\n"  "GPU (AMD)" "$GPU_NAME"
-    printf "  ${BOLD}%-18s${NC}  %s MiB\n"  "VRAM"  "$GPU_VRAM_MIB"
-elif (( HAS_INTEL_GPU )); then
-    printf "  ${BOLD}%-18s${NC}  %s (CPU-only mode)\n"  "GPU (Intel)" "$GPU_NAME"
-else
-    printf "  ${BOLD}%-18s${NC}  None detected — CPU inference\n"  "GPU"
-fi
-_rule "─"
-echo ""
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — MODEL SELECTION
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Model selection"
-
-# ── Model catalog: live fetch from HuggingFace bartowski, fallback to seed ────
-#
-# Strategy:
-#   1. Query https://huggingface.co/api/models?author=bartowski&limit=100&sort=lastModified
-#      to discover all currently-published GGUF repos from bartowski.
-#   2. For each tracked repo-slug, hit /api/models/{repo} to find the newest
-#      Q4_K_M (or Q8_0 for tiny models) GGUF filename and its size_in_bytes.
-#   3. Derive size_gb, estimated layer count, vram tier, and capabilities from
-#      the model name automatically — no hardcoded filenames.
-#   4. If the network is unreachable (air-gap, proxy, etc.) fall back to the
-#      embedded seed catalog so the installer never breaks offline.
-#
-# The seed catalog doubles as the "known good" tier/caps metadata source:
-# when a live fetch succeeds we merge the live filename/URL over the seed's
-# tier and caps data, giving us fresh filenames with curated human labels.
-# ─────────────────────────────────────────────────────────────────────────────
-
-declare -A _CAT_NAME _CAT_QUANT _CAT_FILE _CAT_URL _CAT_SIZE _CAT_LAYERS \
-           _CAT_VRAM _CAT_CAPS _CAT_TIER _CAT_REPO _CAT_PREFER_QUANT
-_CAT_COUNT=0   # total entries loaded
-
-# ── Helper: register one entry ────────────────────────────────────────────────
-_define_model() {
-    # args: idx name quant file repo size_gb layers vram caps tier prefer_quant
-    local idx="$1"
-    _CAT_NAME[$idx]="$2"
-    _CAT_QUANT[$idx]="$3"
-    _CAT_FILE[$idx]="$4"
-    _CAT_REPO[$idx]="$5"
-    _CAT_URL[$idx]="https://huggingface.co/$5/resolve/main/$4"
-    _CAT_SIZE[$idx]="$6"
-    _CAT_LAYERS[$idx]="$7"
-    _CAT_VRAM[$idx]="$8"
-    _CAT_CAPS[$idx]="$9"
-    _CAT_TIER[$idx]="${10}"
-    _CAT_PREFER_QUANT[$idx]="${11:-Q4_K_M}"   # quant to search for when refreshing
-    (( idx > _CAT_COUNT )) && _CAT_COUNT=$idx
-}
-
-# ── Seed catalog (used offline AND as tier/caps metadata for live merge) ──────
-# Format: idx  display_name  quant  filename  hf_repo  size_gb  layers  vram_label  caps  tier  prefer_quant
-_define_model  1  "Qwen3-1.7B"              "Q8"  "Qwen_Qwen3-1.7B-Q8_0.gguf"                           "bartowski/Qwen_Qwen3-1.7B-GGUF"                         2   28  "CPU"    "★ TOOLS · THINK"                        "CPU / No GPU"         "Q8_0"
-_define_model  2  "Qwen3-4B"                "Q4"  "Qwen_Qwen3-4B-Q4_K_M.gguf"                           "bartowski/Qwen_Qwen3-4B-GGUF"                           3   36  "~3 GB"  "★ TOOLS · THINK"                        "CPU / No GPU"         "Q4_K_M"
-_define_model  3  "Phi-4-mini 3.8B"         "Q4"  "Phi-4-mini-instruct-Q4_K_M.gguf"                     "bartowski/Phi-4-mini-instruct-GGUF"                     3   32  "CPU"    "★ TOOLS · THINK · Microsoft"            "CPU / No GPU"         "Q4_K_M"
-_define_model  4  "Qwen3-0.6B"              "Q8"  "Qwen_Qwen3-0.6B-Q8_0.gguf"                           "bartowski/Qwen_Qwen3-0.6B-GGUF"                         1   28  "CPU"    "TOOLS · THINK · tiny"                   "CPU / No GPU"         "Q8_0"
-_define_model  5  "Qwen3-8B"                "Q4"  "Qwen_Qwen3-8B-Q4_K_M.gguf"                           "bartowski/Qwen_Qwen3-8B-GGUF"                           5   36  "~5 GB"  "★ TOOLS · THINK"                        "6-8 GB VRAM"          "Q4_K_M"
-_define_model  6  "Qwen3-8B (Q6)"           "Q6"  "Qwen_Qwen3-8B-Q6_K.gguf"                             "bartowski/Qwen_Qwen3-8B-GGUF"                           6   36  "~6 GB"  "★ TOOLS · THINK · higher quality"        "6-8 GB VRAM"          "Q6_K"
-_define_model  7  "DeepSeek-R1-Distill-8B"  "Q4"  "DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf"            "bartowski/DeepSeek-R1-Distill-Qwen-8B-GGUF"             5   36  "~5 GB"  "THINK · deep reasoning"                 "6-8 GB VRAM"          "Q4_K_M"
-_define_model  8  "Gemma-3-9B"              "Q4"  "google_gemma-3-9b-it-Q4_K_M.gguf"                    "bartowski/google_gemma-3-9b-it-GGUF"                    6   46  "~6 GB"  "TOOLS · Google"                         "6-8 GB VRAM"          "Q4_K_M"
-_define_model  9  "Gemma-3-12B"             "Q4"  "google_gemma-3-12b-it-Q4_K_M.gguf"                   "bartowski/google_gemma-3-12b-it-GGUF"                   8   46  "~8 GB"  "TOOLS · Google vision"                  "6-8 GB VRAM"          "Q4_K_M"
-_define_model 10  "Dolphin3.0-8B"           "Q4"  "dolphin3.0-qwen2.5-7b-Q4_K_M.gguf"                  "bartowski/dolphin3.0-qwen2.5-7b-GGUF"                   5   28  "~5 GB"  "UNCENSORED"                             "6-8 GB VRAM"          "Q4_K_M"
-_define_model 11  "Phi-4-14B"               "Q4"  "phi-4-Q4_K_M.gguf"                                   "bartowski/phi-4-GGUF"                                   9   40  "~9 GB"  "★ TOOLS · top coding + math"             "10-12 GB VRAM"        "Q4_K_M"
-_define_model 12  "Qwen3-14B"               "Q4"  "Qwen_Qwen3-14B-Q4_K_M.gguf"                          "bartowski/Qwen_Qwen3-14B-GGUF"                          9   40  "~9 GB"  "★ TOOLS · THINK"                        "10-12 GB VRAM"        "Q4_K_M"
-_define_model 13  "DeepSeek-R1-Distill-14B" "Q4"  "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"           "bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF"            9   40  "~9 GB"  "THINK · deep reasoning"                 "10-12 GB VRAM"        "Q4_K_M"
-_define_model 14  "Gemma-3-27B"             "Q4"  "google_gemma-3-27b-it-Q4_K_M.gguf"                   "bartowski/google_gemma-3-27b-it-GGUF"                  12   46  "~12 GB" "TOOLS · Google"                         "16 GB VRAM"           "Q4_K_M"
-_define_model 15  "Mistral-Small-3.1-24B"   "Q4"  "Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"    "bartowski/Mistral-Small-3.1-24B-Instruct-2503-GGUF"    14   40  "~14 GB" "TOOLS · THINK · 128K context"           "16 GB VRAM"           "Q4_K_M"
-_define_model 16  "Mistral-Small-3.2-24B"   "Q4"  "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"    "bartowski/Mistral-Small-3.2-24B-Instruct-2506-GGUF"    14   40  "~14 GB" "★ TOOLS · THINK · newest Mistral"       "16 GB VRAM"           "Q4_K_M"
-_define_model 17  "Qwen3-30B-A3B (MoE)"     "Q4"  "Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"                     "bartowski/Qwen_Qwen3-30B-A3B-GGUF"                     16   48  "~16 GB" "★ TOOLS · THINK · 30B quality @ 8B speed" "16 GB VRAM"          "Q4_K_M"
-_define_model 18  "Qwen3-32B"               "Q4"  "Qwen_Qwen3-32B-Q4_K_M.gguf"                          "bartowski/Qwen_Qwen3-32B-GGUF"                         19   64  "~19 GB" "★ TOOLS · THINK"                        "24+ GB VRAM"          "Q4_K_M"
-_define_model 19  "DeepSeek-R1-Distill-32B" "Q4"  "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"           "bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF"           19   64  "~19 GB" "THINK · deep reasoning"                 "24+ GB VRAM"          "Q4_K_M"
-_define_model 20  "Gemma-3-27B (24GB tier)" "Q4"  "google_gemma-3-27b-it-Q4_K_M.gguf"                   "bartowski/google_gemma-3-27b-it-GGUF"                  16   46  "~16 GB" "TOOLS · Google"                         "24+ GB VRAM"          "Q4_K_M"
-_define_model 21  "Llama-3.3-70B"           "Q4"  "Llama-3.3-70B-Instruct-Q4_K_M.gguf"                  "bartowski/Llama-3.3-70B-Instruct-GGUF"                 40   80  "~40 GB" "★ TOOLS · flagship"                     "48 GB VRAM (multi-GPU)" "Q4_K_M"
-
-# ── Live catalog refresh from HuggingFace API ─────────────────────────────────
-# Queries each seed repo for its current file listing, finds the best-matching
-# GGUF for the preferred quant, updates filename + URL + size in-place.
-# If HF is unreachable the seed values are used unchanged.
-
-_HF_API="https://huggingface.co/api"
-_CATALOG_FRESH=0   # set to 1 if at least one repo refreshed successfully
-_CATALOG_CACHE="$CONFIG_DIR/catalog_cache.tsv"
-_CATALOG_MAX_AGE=86400   # refresh at most once per day (seconds)
-
-# Check whether the cache is still fresh enough to reuse
-_cache_age=999999
-if [[ -f "$_CATALOG_CACHE" ]]; then
-    _cache_mtime=$(stat -c %Y "$_CATALOG_CACHE" 2>/dev/null || echo 0)
-    _now=$(date +%s)
-    _cache_age=$(( _now - _cache_mtime ))
-fi
-
-_hf_reachable=0
-if (( _cache_age >= _CATALOG_MAX_AGE )); then
-    # Test network reachability with a fast HEAD request
-    if curl -sf --max-time 6 --head "https://huggingface.co" >/dev/null 2>&1; then
-        _hf_reachable=1
-    fi
-fi
-
-# Helper: given a repo slug + preferred quant pattern, return "filename|bytes"
-# of the newest matching GGUF file, or empty string on failure.
-_hf_best_gguf() {
-    local repo="$1" quant_pat="$2"
-    local _api_url="${_HF_API}/models/${repo}"
-    local _json
-    _json=$(curl -sf --max-time 15 "$_api_url" 2>/dev/null) || { echo ""; return; }
-
-    # Use python3 to parse the siblings array — more robust than grep/paste
-    echo "$_json" | python3 - "$quant_pat" <<'PYEOF' 2>/dev/null
-import sys, json, re
-quant_pat = sys.argv[1].lower()
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-siblings = data.get('siblings') or []
-best_file, best_bytes = "", 0
-for s in siblings:
-    f = s.get('rfilename','')
-    b = s.get('size',0) or 0
-    if not f.endswith('.gguf'):
-        continue
-    # Skip sharded files
-    if re.search(r'-\d{5}-of-\d{5}', f):
-        continue
-    if quant_pat.lower() not in f.lower():
-        continue
-    if b > best_bytes:
-        best_bytes, best_file = b, f
-if best_file:
-    print(f"{best_file}|{best_bytes}")
-PYEOF
-}
-
-# Perform the live refresh (skip if cache is fresh)
-if (( _hf_reachable )); then
-    spin_start "Refreshing model catalog from HuggingFace bartowski…"
-    _refresh_ok=0
-    _cache_lines=()
-
-    _i=0
-    for _i in $(seq 1 $_CAT_COUNT); do
-        _repo="${_CAT_REPO[$_i]}"
-        _qpat="${_CAT_PREFER_QUANT[$_i]}"
-        _result=""
-        _result=$(_hf_best_gguf "$_repo" "$_qpat")
-        if [[ -n "$_result" ]]; then
-            _live_file=""; _live_bytes=0; _live_gb=0
-            _live_file=$(echo "$_result" | cut -d'|' -f1)
-            _live_bytes=$(echo "$_result" | cut -d'|' -f2)
-            _live_gb=$(( (_live_bytes + 536870912) / 1073741824 ))   # round to nearest GB
-            (( _live_gb < 1 )) && _live_gb=1
-
-            # Derive quant label from filename
-            _live_quant="Q4"
-            echo "$_live_file" | grep -qi 'Q8'     && _live_quant="Q8"
-            echo "$_live_file" | grep -qi 'Q6'     && _live_quant="Q6"
-            echo "$_live_file" | grep -qi 'Q4_K_M' && _live_quant="Q4_K_M"
-            echo "$_live_file" | grep -qi 'IQ4'    && _live_quant="IQ4"
-            echo "$_live_file" | grep -qi 'IQ3'    && _live_quant="IQ3"
-
-            # Update in-memory catalog
-            _CAT_FILE[$_i]="$_live_file"
-            _CAT_URL[$_i]="https://huggingface.co/${_repo}/resolve/main/${_live_file}"
-            _CAT_SIZE[$_i]="$_live_gb"
-            _CAT_QUANT[$_i]="$_live_quant"
-
-            # Re-derive VRAM label from live size
-            if   (( _live_gb <= 3  )); then _CAT_VRAM[$_i]="CPU"
-            elif (( _live_gb <= 6  )); then _CAT_VRAM[$_i]="~${_live_gb} GB"
-            elif (( _live_gb <= 10 )); then _CAT_VRAM[$_i]="~${_live_gb} GB"
-            elif (( _live_gb <= 16 )); then _CAT_VRAM[$_i]="~${_live_gb} GB"
-            else                           _CAT_VRAM[$_i]="~${_live_gb} GB"
-            fi
-
-            (( _refresh_ok++ ))
-            _cache_lines+=("${_i}|${_live_file}|${_live_bytes}|${_live_quant}")
-        fi
-    done
-
-    spin_stop 0
-
-    if (( _refresh_ok > 0 )); then
-        _CATALOG_FRESH=1
-        # Write cache so we don't re-fetch for another day
-        mkdir -p "$CONFIG_DIR"
-        printf '%s\n' "${_cache_lines[@]}" > "$_CATALOG_CACHE"
-        info "Catalog refreshed live: ${_refresh_ok}/${_CAT_COUNT} repos updated from HuggingFace."
+select_model() {
+    local vram=$GPU_VRAM_GB ram=$TOTAL_RAM_GB
+    # GPU tiers
+    if (( HAS_GPU && vram >= 48 )); then
+        highlight "≥48 GB VRAM → Llama-3.3-70B Q4_K_M [TOOLS] ★"
+        M[name]="Llama-3.3-70B-Instruct Q4_K_M";      M[caps]="TOOLS"
+        M[file]="Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+        M[size_gb]=40; M[layers]=80; M[tier]="70B"
+    elif (( HAS_GPU && vram >= 24 )); then
+        highlight "≥24 GB VRAM → Qwen3-32B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Qwen3-32B Q4_K_M";                    M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-32B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
+        M[size_gb]=19; M[layers]=64; M[tier]="32B"
+    elif (( HAS_GPU && vram >= 16 )); then
+        highlight "≥16 GB VRAM → Mistral-Small-3.2-24B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Mistral-Small-3.2-24B Q4_K_M";        M[caps]="TOOLS + THINK"
+        M[file]="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+        M[size_gb]=14; M[layers]=40; M[tier]="24B"
+    elif (( HAS_GPU && vram >= 12 )); then
+        highlight "≥12 GB VRAM → Qwen3-14B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Qwen3-14B Q4_K_M";                    M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
+        M[size_gb]=9;  M[layers]=40; M[tier]="14B"
+    elif (( HAS_GPU && vram >= 10 )); then
+        highlight "≥10 GB VRAM → Phi-4-14B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Phi-4-14B Q4_K_M";                    M[caps]="TOOLS + THINK"
+        M[file]="phi-4-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
+        M[size_gb]=9;  M[layers]=40; M[tier]="14B"
+    elif (( HAS_GPU && vram >= 8 )); then
+        highlight "≥8 GB VRAM → Qwen3-8B Q6_K [TOOLS+THINK] ★"
+        M[name]="Qwen3-8B Q6_K";                       M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-8B-Q6_K.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
+        M[size_gb]=6;  M[layers]=36; M[tier]="8B"
+    elif (( HAS_GPU && vram >= 6 )); then
+        highlight "≥6 GB VRAM → Qwen3-8B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Qwen3-8B Q4_K_M";                     M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
+        M[size_gb]=5;  M[layers]=36; M[tier]="8B"
+    elif (( HAS_GPU && vram >= 4 )); then
+        highlight "≥4 GB VRAM → Qwen3-4B Q4_K_M [TOOLS+THINK]"
+        M[name]="Qwen3-4B Q4_K_M";                     M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
+        M[size_gb]=3;  M[layers]=36; M[tier]="4B"
+    # CPU tiers
+    elif (( ram >= 32 )); then
+        highlight "CPU ≥32 GB RAM → Qwen3-14B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Qwen3-14B Q4_K_M";                    M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
+        M[size_gb]=9;  M[layers]=40; M[tier]="14B"
+    elif (( ram >= 16 )); then
+        highlight "CPU ≥16 GB RAM → Qwen3-8B Q4_K_M [TOOLS+THINK] ★"
+        M[name]="Qwen3-8B Q4_K_M";                     M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
+        M[size_gb]=5;  M[layers]=36; M[tier]="8B"
+    elif (( ram >= 8 )); then
+        highlight "CPU ≥8 GB RAM → Qwen3-4B Q4_K_M [TOOLS+THINK]"
+        M[name]="Qwen3-4B Q4_K_M";                     M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
+        M[size_gb]=3;  M[layers]=36; M[tier]="4B"
     else
-        warn "HuggingFace reachable but no files matched — using seed catalog."
+        highlight "CPU <8 GB RAM → Qwen3-1.7B Q8_0 [TOOLS+THINK]"
+        M[name]="Qwen3-1.7B Q8_0";                     M[caps]="TOOLS + THINK"
+        M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
+        M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
+        M[size_gb]=2;  M[layers]=28; M[tier]="1.7B"
     fi
-elif (( _cache_age < _CATALOG_MAX_AGE )) && [[ -f "$_CATALOG_CACHE" ]]; then
-    # ── Apply cached refresh ──────────────────────────────────────────────────
-    _cache_age_h=$(( _cache_age / 3600 ))
-    info "Applying cached catalog (${_cache_age_h}h old, refreshes after 24h)."
-    while IFS='|' read -r _ci _cf _cb _cq; do
-        [[ "$_ci" =~ ^[0-9]+$ ]] || continue
-        _CAT_FILE[$_ci]="$_cf"
-        _CAT_URL[$_ci]="https://huggingface.co/${_CAT_REPO[$_ci]}/resolve/main/${_cf}"
-        _live_gb=$(( (_cb + 536870912) / 1073741824 ))
-        (( _live_gb < 1 )) && _live_gb=1
-        _CAT_SIZE[$_ci]="$_live_gb"
-        _CAT_QUANT[$_ci]="$_cq"
-        _CAT_VRAM[$_ci]="~${_live_gb} GB"
-        _CATALOG_FRESH=1
-    done < "$_CATALOG_CACHE"
-else
-    warn "HuggingFace unreachable — using built-in seed catalog (offline mode)."
-fi
-
-# Show catalog source in banner
-if (( _CATALOG_FRESH )); then
-    echo -e "  ${ACCENT2}●${NC}  ${BOLD}Live catalog${NC}  ${MUTED}— filenames reflect latest bartowski releases${NC}"
-else
-    echo -e "  ${WARN_COL}●${NC}  ${BOLD}Seed catalog${NC}  ${MUTED}— run again online to pick up newer model releases${NC}"
-fi
-echo ""
-
-# ── Auto-select based on hardware ─────────────────────────────────────────────
-# The tier-to-index mapping still uses catalog indices (1-21) which are stable
-# regardless of what filenames live refresh found.
-_auto_idx=1
-if (( HAS_NVIDIA || HAS_AMD_GPU )); then
-    if   (( GPU_VRAM_GB >= 48 )); then _auto_idx=21
-    elif (( GPU_VRAM_GB >= 24 )); then _auto_idx=18
-    elif (( GPU_VRAM_GB >= 16 )); then _auto_idx=17
-    elif (( GPU_VRAM_GB >= 12 )); then _auto_idx=12
-    elif (( GPU_VRAM_GB >=  8 )); then _auto_idx=11
-    elif (( GPU_VRAM_GB >=  6 )); then _auto_idx=5
-    elif (( GPU_VRAM_GB >=  4 )); then _auto_idx=2
-    else                               _auto_idx=1
-    fi
-else
-    # CPU-only RAM tiers
-    if   (( TOTAL_RAM_GB >= 32 )); then _auto_idx=12
-    elif (( TOTAL_RAM_GB >= 16 )); then _auto_idx=5
-    elif (( TOTAL_RAM_GB >=  8 )); then _auto_idx=2
-    else                                _auto_idx=1
-    fi
-fi
-
-_sel_idx=$_auto_idx
-
-highlight "Auto-selected: ${_CAT_NAME[$_auto_idx]} (${_CAT_QUANT[$_auto_idx]}) — ${_CAT_CAPS[$_auto_idx]}"
-echo -e "  ${MUTED}File: ${_CAT_FILE[$_auto_idx]}${NC}"
-echo -e "  ${MUTED}Based on: VRAM=${GPU_VRAM_GB}GB  RAM=${TOTAL_RAM_GB}GB${NC}"
-echo ""
-
-# ── Interactive picker ────────────────────────────────────────────────────────
-_is_installed() { [[ -f "$GGUF_MODELS/$1" ]] && echo " ✔" || echo "  "; }
-
-_show_model_picker() {
-    echo ""
-    _rule "─"
-    printf "  ${BOLD}%-4s  %-32s  %-7s  %-8s  %-2s  %s${NC}\n" "#" "Model" "Quant" "VRAM" "" "Capabilities"
-    _rule "─"
-    local _last_tier=""
-    _i=0
-    for _i in $(seq 1 $_CAT_COUNT); do
-        if [[ "${_CAT_TIER[$_i]}" != "$_last_tier" ]]; then
-            echo ""
-            echo -e "  ${YELLOW}▸  ${_CAT_TIER[$_i]}${NC}"
-            _last_tier="${_CAT_TIER[$_i]}"
-        fi
-        local _chk
-        _chk=$(_is_installed "${_CAT_FILE[$_i]}")
-        printf "  %-4s  %-32s  %-7s  %-8s  %-2s  %s\n" \
-            "$_i" "${_CAT_NAME[$_i]}" "${_CAT_QUANT[$_i]}" "${_CAT_VRAM[$_i]}" \
-            "$_chk" "${_CAT_CAPS[$_i]}"
-    done
-    echo ""
-    _rule "─"
-    echo -e "  ${MUTED}✔ = already downloaded to $GGUF_MODELS${NC}"
 }
+select_model
 
-if ask_yes_no "Override with manual model selection?"; then
-    _show_model_picker
-    while true; do
-        printf "  ${ACCENT}?${NC}  ${BOLD}Enter model number [1-%s, default: %s]:${NC} " \
-            "$_CAT_COUNT" "$_auto_idx"
-        read -r _input
-        [[ -z "$_input" ]] && _input="$_auto_idx"
-        if [[ "$_input" =~ ^[0-9]+$ ]] && (( _input >= 1 && _input <= _CAT_COUNT )); then
-            _sel_idx="$_input"
-            break
-        fi
-        warn "Please enter a number between 1 and ${_CAT_COUNT}."
-    done
-fi
-
-# ── Store selected model in declare -A M ──────────────────────────────────────
-declare -A M
-M[name]="${_CAT_NAME[$_sel_idx]}"
-M[quant]="${_CAT_QUANT[$_sel_idx]}"
-M[file]="${_CAT_FILE[$_sel_idx]}"
-M[url]="${_CAT_URL[$_sel_idx]}"
-M[size_gb]="${_CAT_SIZE[$_sel_idx]}"
-M[layers]="${_CAT_LAYERS[$_sel_idx]}"
-M[caps]="${_CAT_CAPS[$_sel_idx]}"
-
-# Compute GPU/CPU layers
-GPU_LAYERS=$(gpu_layers_for "${M[size_gb]}" "${M[layers]}")
-if [[ "$GPU_LAYERS" == "-1" ]]; then
-    CPU_LAYERS=0
+# Layer/batch tuning
+if (( HAS_GPU )); then
+    GPU_LAYERS=$(gpu_layers_for "${M[size_gb]}" "${M[layers]}")
+    if [[ "$GPU_LAYERS" == "-1" ]]; then CPU_LAYERS=0
+    else CPU_LAYERS=$(( M[layers] - GPU_LAYERS )); (( CPU_LAYERS < 0 )) && CPU_LAYERS=0; fi
 else
-    CPU_LAYERS=$(( M[layers] - GPU_LAYERS ))
-    (( CPU_LAYERS < 0 )) && CPU_LAYERS=0
+    GPU_LAYERS=0; CPU_LAYERS="${M[layers]}"
+fi
+if   (( GPU_VRAM_GB >= 24 )); then BATCH=2048
+elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
+elif (( GPU_VRAM_GB >= 8  )); then BATCH=512
+elif (( GPU_VRAM_GB >= 4  )); then BATCH=256
+else                               BATCH=128; fi
+
+_is_cached() { [[ -f "$GGUF_MODELS/$1" ]] && printf " ${ACCENT2}✓ cached${NC}" || printf ""; }
+
+info "Auto-selected: ${M[name]}  (${M[tier]})  GPU:${GPU_LAYERS} CPU:${CPU_LAYERS} batch:${BATCH}"
+printf "\n"
+
+# Manual override picker
+if ask_yes_no "Override with manual model selection?"; then
+    printf "\n"
+    printf "  ${CYAN}╔══════════════════════════════════════════════════════════════════════════════════════════╗${NC}\n"
+    printf "  ${CYAN}║  MODEL PICKER  ·  type a number and press Enter  ·  ✓=already cached    ║${NC}\n"
+    printf "  ${CYAN}╚══════════════════════════════════════════════════════════════════════════════════════════╝${NC}\n\n"
+    printf "  ${CYAN}%-4s  %-32s  %-5s  %-7s  %-5s  %s${NC}\n" "#" "Model" "Quant" "VRAM" "★" "Capabilities"
+    printf "  ${CYAN}────  ────────────────────────────────  ─────  ───────  ─────  ──────────────────────────${NC}\n"
+
+    printf "\n  ${YELLOW}  ›  CPU / No GPU needed${NC}\n"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "1"  "Qwen3-1.7B"              "Q8"  "CPU"    "$(_is_cached Qwen_Qwen3-1.7B-Q8_0.gguf)"                                                       "★ TOOLS · THINK · tiny"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "2"  "Qwen3-4B"                "Q4"  "~3 GB"  "$(_is_cached Qwen_Qwen3-4B-Q4_K_M.gguf)"                                                       "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "3"  "Phi-4-mini 3.8B"         "Q4"  "CPU"    "$(_is_cached microsoft_Phi-4-mini-instruct-Q4_K_M.gguf)"                                        "★ TOOLS · THINK · Microsoft"
+
+    printf "\n  ${YELLOW}  ›  6–8 GB VRAM${NC}\n"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "4"  "Qwen3-8B"                "Q4"  "~5 GB"  "$(_is_cached Qwen_Qwen3-8B-Q4_K_M.gguf)"                                                       "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "5"  "Qwen3-8B"                "Q6"  "~6 GB"  "$(_is_cached Qwen_Qwen3-8B-Q6_K.gguf)"                                                         "★ TOOLS · THINK · higher quality"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "6"  "DeepSeek-R1-Distill-8B"  "Q4"  "~5 GB"  "$(_is_cached DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf)"                                         "  THINK · deep reasoning"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "7"  "Gemma-3-9B"              "Q4"  "~6 GB"  "$(_is_cached google_gemma-3-9b-it-Q4_K_M.gguf)"                                                 "  TOOLS · Google"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "8"  "Gemma-3-12B"             "Q4"  "~8 GB"  "$(_is_cached google_gemma-3-12b-it-Q4_K_M.gguf)"                                                "  TOOLS · Google"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "9"  "Dolphin3-8B"             "Q4"  "~5 GB"  "$(_is_cached Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf)"                                              "  UNCENSORED"
+
+    printf "\n  ${YELLOW}  ›  10–12 GB VRAM${NC}\n"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "10" "Phi-4-14B"               "Q4"  "~9 GB"  "$(_is_cached phi-4-Q4_K_M.gguf)"                                                               "★ TOOLS · top coding+math"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "11" "Qwen3-14B"               "Q4"  "~9 GB"  "$(_is_cached Qwen_Qwen3-14B-Q4_K_M.gguf)"                                                      "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "12" "DeepSeek-R1-Distill-14B" "Q4"  "~9 GB"  "$(_is_cached DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf)"                                        "  THINK · deep reasoning"
+
+    printf "\n  ${YELLOW}  ›  16 GB VRAM${NC}\n"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "13" "Gemma-3-27B"             "Q4"  "~16 GB" "$(_is_cached google_gemma-3-27b-it-Q4_K_M.gguf)"                                                "  TOOLS · Google"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "14" "Mistral-Small-3.1-24B"   "Q4"  "~14 GB" "$(_is_cached mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf)"                        "  TOOLS · THINK · 128K ctx"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "15" "Mistral-Small-3.2-24B"   "Q4"  "~14 GB" "$(_is_cached mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf)"                        "★ TOOLS · THINK · newest"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "16" "Qwen3-30B-A3B (MoE)"     "Q4"  "~16 GB" "$(_is_cached Qwen_Qwen3-30B-A3B-Q4_K_M.gguf)"                                                  "★ TOOLS · THINK · 30B @ 8B speed"
+
+    printf "\n  ${YELLOW}  ›  24+ GB VRAM${NC}\n"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "17" "Qwen3-32B"               "Q4"  "~19 GB" "$(_is_cached Qwen_Qwen3-32B-Q4_K_M.gguf)"                                                      "★ TOOLS · THINK"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "18" "DeepSeek-R1-32B"         "Q4"  "~19 GB" "$(_is_cached DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf)"                                        "  THINK · deep reasoning"
+    printf "  %-4s  %-32s  %-5s  %-7s  %b  %s\n" "19" "Llama-3.3-70B"           "Q4"  "~40 GB" "$(_is_cached Llama-3.3-70B-Instruct-Q4_K_M.gguf)"                                              "★ TOOLS · flagship"
+    printf "\n"
+
+    printf "  ${ACCENT}?${NC}  ${BOLD}Choice (or Enter to keep auto-selected):${NC} "
+    read -r _mc || _mc=""
+
+    case "${_mc:-}" in
+        1)  M[name]="Qwen3-1.7B Q8_0";                     M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-1.7B-Q8_0.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf"
+            M[size_gb]=2;  M[layers]=28; M[tier]="1.7B" ;;
+        2)  M[name]="Qwen3-4B Q4_K_M";                     M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-4B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf"
+            M[size_gb]=3;  M[layers]=36; M[tier]="4B" ;;
+        3)  M[name]="Phi-4-mini-instruct Q4_K_M";          M[caps]="TOOLS + THINK"
+            M[file]="microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/main/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf"
+            M[size_gb]=3;  M[layers]=32; M[tier]="3.8B" ;;
+        4)  M[name]="Qwen3-8B Q4_K_M";                     M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-8B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf"
+            M[size_gb]=5;  M[layers]=36; M[tier]="8B" ;;
+        5)  M[name]="Qwen3-8B Q6_K";                       M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-8B-Q6_K.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf"
+            M[size_gb]=6;  M[layers]=36; M[tier]="8B" ;;
+        6)  M[name]="DeepSeek-R1-Distill-Qwen-8B Q4_K_M";  M[caps]="THINK"
+            M[file]="DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-8B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf"
+            M[size_gb]=5;  M[layers]=36; M[tier]="8B" ;;
+        7)  M[name]="Gemma-3-9B Q4_K_M";                   M[caps]="TOOLS"
+            M[file]="google_gemma-3-9b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-9b-it-GGUF/resolve/main/google_gemma-3-9b-it-Q4_K_M.gguf"
+            M[size_gb]=6;  M[layers]=42; M[tier]="9B" ;;
+        8)  M[name]="Gemma-3-12B Q4_K_M";                  M[caps]="TOOLS"
+            M[file]="google_gemma-3-12b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q4_K_M.gguf"
+            M[size_gb]=8;  M[layers]=46; M[tier]="12B" ;;
+        9)  M[name]="Dolphin3.0-Llama3.1-8B Q4_K_M";       M[caps]="UNCENSORED"
+            M[file]="Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf"
+            M[size_gb]=5;  M[layers]=32; M[tier]="8B" ;;
+        10) M[name]="Phi-4-14B Q4_K_M";                    M[caps]="TOOLS + THINK"
+            M[file]="phi-4-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf"
+            M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
+        11) M[name]="Qwen3-14B Q4_K_M";                    M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-14B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf"
+            M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
+        12) M[name]="DeepSeek-R1-Distill-Qwen-14B Q4_K_M"; M[caps]="THINK"
+            M[file]="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
+            M[size_gb]=9;  M[layers]=40; M[tier]="14B" ;;
+        13) M[name]="Gemma-3-27B Q4_K_M";                  M[caps]="TOOLS"
+            M[file]="google_gemma-3-27b-it-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/google_gemma-3-27b-it-GGUF/resolve/main/google_gemma-3-27b-it-Q4_K_M.gguf"
+            M[size_gb]=16; M[layers]=62; M[tier]="27B" ;;
+        14) M[name]="Mistral-Small-3.1-24B Q4_K_M";        M[caps]="TOOLS + THINK"
+            M[file]="mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.1-24B-Instruct-2503-GGUF/resolve/main/mistralai_Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf"
+            M[size_gb]=14; M[layers]=40; M[tier]="24B" ;;
+        15) M[name]="Mistral-Small-3.2-24B Q4_K_M";        M[caps]="TOOLS + THINK"
+            M[file]="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+            M[size_gb]=14; M[layers]=40; M[tier]="24B" ;;
+        16) M[name]="Qwen3-30B-A3B Q4_K_M (MoE)";          M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-30B-A3B-GGUF/resolve/main/Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"
+            M[size_gb]=18; M[layers]=48; M[tier]="30B-A3B" ;;
+        17) M[name]="Qwen3-32B Q4_K_M";                    M[caps]="TOOLS + THINK"
+            M[file]="Qwen_Qwen3-32B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf"
+            M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
+        18) M[name]="DeepSeek-R1-Distill-Qwen-32B Q4_K_M"; M[caps]="THINK"
+            M[file]="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
+            M[size_gb]=19; M[layers]=64; M[tier]="32B" ;;
+        19) M[name]="Llama-3.3-70B-Instruct Q4_K_M";       M[caps]="TOOLS"
+            M[file]="Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+            M[url]="https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+            M[size_gb]=40; M[layers]=80; M[tier]="70B" ;;
+        "")  info "Keeping auto-selected model." ;;
+        *)   warn "Invalid choice '$_mc' — keeping auto-selected model." ;;
+    esac
+    unset _mc
+
+    # Recalculate layers and batch for manual selection
+    if (( HAS_GPU )); then
+        GPU_LAYERS=$(gpu_layers_for "${M[size_gb]}" "${M[layers]}")
+        if [[ "$GPU_LAYERS" == "-1" ]]; then CPU_LAYERS=0
+        else CPU_LAYERS=$(( M[layers] - GPU_LAYERS )); (( CPU_LAYERS < 0 )) && CPU_LAYERS=0; fi
+    else
+        GPU_LAYERS=0; CPU_LAYERS="${M[layers]}"
+    fi
+    if   (( GPU_VRAM_GB >= 24 )); then BATCH=2048
+    elif (( GPU_VRAM_GB >= 16 )); then BATCH=1024
+    elif (( GPU_VRAM_GB >= 8  )); then BATCH=512
+    elif (( GPU_VRAM_GB >= 4  )); then BATCH=256
+    else                               BATCH=128; fi
 fi
 
-# Derive Ollama tag
-OLLAMA_TAG=$(echo "${M[file]}" | sed 's/\.gguf$//' | tr '[:upper:]' '[:lower:]' \
-    | sed 's/_/-/g; s/[^a-z0-9:-]//g; s/--*/-/g' | cut -c1-60)
+info "Final selection: ${M[name]}  [${M[caps]}]  GPU:${GPU_LAYERS} CPU:${CPU_LAYERS} batch:${BATCH}"
 
-highlight "Selected: ${M[name]} | Tag: ${OLLAMA_TAG} | GPU layers: ${GPU_LAYERS}"
-echo -e "  ${MUTED}File:  ${M[file]}${NC}"
-echo -e "  ${MUTED}URL:   ${M[url]}${NC}"
+# Disk space check
+if (( DISK_FREE_GB < M[size_gb] + 3 )); then
+    warn "Low disk: ${DISK_FREE_GB} GB free, model needs ~${M[size_gb]} GB."
+    ask_yes_no "Continue anyway?" || error "Aborting — free up disk space and re-run."
+fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 3b — PYTHON ENVIRONMENT DETECTION
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Python environment detection (pre-apt scan)"
+# =============================================================================
+# STEP 4 — SYSTEM PACKAGES + NODE.JS
+# zstd MUST be installed here, before Ollama (Ollama needs it for extraction)
+# =============================================================================
+step "System packages (zstd · build tools · Node.js)"
 
-# Quick scan before apt runs — just to detect what's already present
-PYTHON3=""
-for _p in python3.12 python3.11 python3.10 python3; do
-    if command -v "$_p" &>/dev/null; then
-        _pver=$("$_p" --version 2>&1 | grep -oP '[0-9]+\.[0-9]+' | head -1)
-        _pmaj=$(echo "$_pver" | cut -d. -f1)
-        _pmin=$(echo "$_pver" | cut -d. -f2)
-        if (( _pmaj >= 3 && _pmin >= 10 )); then
-            PYTHON3="$_p"
-            info "Pre-installed Python detected: $("$_p" --version)"
-            break
-        fi
-    fi
-done
-[[ -z "$PYTHON3" ]] && info "Python 3.10+ not found yet — will install via apt."
+info "Running apt-get update…"
+sudo apt-get update -qq >> "$LOG_FILE" 2>&1 || warn "apt update returned non-zero."
 
-# Placeholder; re-detected after apt in STEP 4
-PYVER_SHORT="312"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — SYSTEM DEPENDENCIES
-# ═══════════════════════════════════════════════════════════════════════════════
-step "System dependencies"
-
-spin_start "Updating apt cache…"
-sudo apt-get update -qq >/dev/null 2>&1 || warn "apt-get update had warnings"
-spin_stop $?
-
-# ── Detect distro Python version to install the right -full / -venv package ──
-_distro_py_ver="3.11"   # safe default
-_distro_id_lc=$(get_distro_id | tr '[:upper:]' '[:lower:]')
-_codename_lc=$(get_distro_codename | tr '[:upper:]' '[:lower:]')
-case "$_codename_lc" in
-    noble|oracular|plucky)   _distro_py_ver="3.12" ;;  # Ubuntu 24.04+
-    jammy|kinetic|lunar)     _distro_py_ver="3.11" ;;  # Ubuntu 22.04
-    bookworm)                _distro_py_ver="3.11" ;;  # Debian 12
-    bullseye)                _distro_py_ver="3.9"  ;;  # Debian 11
-    *) _distro_py_ver="3.12" ;;                        # assume modern
-esac
-_py_pkg="python${_distro_py_ver}"
-
-# Install zstd early so Ollama installer can extract (it uses zstd internally)
-spin_start "Installing zstd (required by Ollama installer)…"
-sudo apt-get install -y -qq zstd libzstd-dev >/dev/null 2>&1 || warn "zstd install had warnings"
-spin_stop $?
-
-# ── Main package list ────────────────────────────────────────────────────────
-_pkgs=(
-    # Build tools — needed for llama-cpp-python source build
-    build-essential g++ clang cmake pkg-config
-    # SSL / compression
-    libssl-dev libffi-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev
-    # Network / download
-    git curl wget ca-certificates
-    # Python — distro-version-specific full install with venv support
-    "${_py_pkg}" "${_py_pkg}-venv" "${_py_pkg}-dev" "${_py_pkg}-full"
-    python3 python3-pip python3-venv python3-dev python3-setuptools python3-wheel
-    # Apt infrastructure
-    software-properties-common apt-transport-https gnupg lsb-release
-    # Hardware info
-    pciutils lshw
-    # Misc
-    unzip jq
+BASE_PKGS=(
+    # Ollama extraction requirement — MUST be first
+    zstd libzstd-dev
+    # Core build tools
+    curl wget git ca-certificates gnupg lsb-release
+    build-essential g++ clang cmake ninja-build pkg-config
+    libssl-dev libffi-dev libncurses-dev zlib1g-dev libbz2-dev
+    libreadline-dev libsqlite3-dev liblzma-dev
+    # Python base
+    python3 python3-pip python3-venv python3-dev python3-full
+    software-properties-common
+    # Download accelerator + media
+    aria2 ffmpeg pciutils
+    # Terminal quality-of-life
+    bat grc source-highlight jq unzip
 )
+(( HAS_AVX2 )) && BASE_PKGS+=(libopenblas-dev liblapack-dev)
 
-spin_start "Installing system packages…"
-sudo apt-get install -y -qq "${_pkgs[@]}" >/dev/null 2>&1 || warn "Some packages may have failed — continuing"
-spin_stop $?
+info "Installing ${#BASE_PKGS[@]} system packages…"
+_apt_install "${BASE_PKGS[@]}"
 
-# ── Install Node.js 20 LTS via NodeSource (distro nodejs is too old) ─────────
+# Verify critical commands
+for _cmd in curl wget git python3; do
+    command -v "$_cmd" &>/dev/null || error "Critical dependency missing after install: $_cmd"
+done
+
+# Node.js 20 LTS via NodeSource
 _node_ok=0
 if command -v node &>/dev/null; then
-    _nv=$(node --version 2>/dev/null | grep -oP '[0-9]+' | head -1 || echo 0)
-    (( _nv >= 18 )) && _node_ok=1
+    _nver=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo 0)
+    (( _nver >= 18 )) && _node_ok=1
 fi
 if (( !_node_ok )); then
-    spin_start "Installing Node.js 20 LTS (NodeSource)…"
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null 2>&1 \
-        && sudo apt-get install -y -qq nodejs >/dev/null 2>&1 \
-        || warn "Node.js 20 install failed — Claude Code / Codex may not work"
-    spin_stop $?
-else
-    info "Node.js $(node --version) already installed."
+    info "Installing Node.js 20 LTS via NodeSource…"
+    _pbar 10 "NodeSource setup script"
+    curl -fsSL https://deb.nodesource.com/setup_20.x 2>>"$LOG_FILE" | sudo bash - >> "$LOG_FILE" 2>&1
+    _pbar 60 "apt: nodejs"
+    sudo apt-get install -y nodejs >> "$LOG_FILE" 2>&1 && _node_ok=1 || warn "Node.js install failed."
+    _pbar_done
 fi
+command -v node &>/dev/null \
+    && info "Node.js $(node --version)  /  npm $(npm --version)" \
+    || warn "Node.js not available — Claude Code/Codex will not install."
+unset _cmd _node_ok _nver
 
-# ── Re-detect Python after apt ────────────────────────────────────────────────
-PYTHON3=""
-for _p in "python${_distro_py_ver}" python3.12 python3.11 python3.10 python3; do
-    if command -v "$_p" &>/dev/null; then
-        _pver=$("$_p" --version 2>&1 | grep -oP '[0-9]+\.[0-9]+' | head -1)
-        _pmaj=$(echo "$_pver" | cut -d. -f1)
-        _pmin=$(echo "$_pver" | cut -d. -f2)
-        if (( _pmaj >= 3 && _pmin >= 10 )); then
-            PYTHON3=$(command -v "$_p")
-            break
-        fi
+# =============================================================================
+# STEP 5 — PYTHON ENVIRONMENT
+# =============================================================================
+step "Python environment"
+
+mkdir -p "$TEMP_DIR"
+
+PYVER_RAW=$(python3 --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
+PYVER_MAJOR=$(echo "$PYVER_RAW" | cut -d. -f1)
+PYVER_MINOR=$(echo "$PYVER_RAW" | cut -d. -f2)
+PYTHON_BIN="python3"
+info "System Python: $PYVER_RAW"
+
+# Upgrade via deadsnakes if < 3.10
+if (( PYVER_MAJOR < 3 || (PYVER_MAJOR == 3 && PYVER_MINOR < 10) )); then
+    warn "Python $PYVER_RAW too old (need 3.10+) — installing 3.11 via deadsnakes…"
+    sudo apt-get install -y software-properties-common >> "$LOG_FILE" 2>&1 || true
+    if ! grep -rq "deadsnakes" /etc/apt/sources.list.d/ 2>/dev/null; then
+        sudo add-apt-repository -y ppa:deadsnakes/ppa >> "$LOG_FILE" 2>&1 || warn "deadsnakes PPA failed."
+        sudo apt-get update -qq >> "$LOG_FILE" 2>&1 || true
     fi
-done
-[[ -z "$PYTHON3" ]] && error "Python 3.10+ not found after apt install. Please install python3.12-full manually."
-
-PYVER_SHORT=$("$PYTHON3" -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>/dev/null || echo "312")
-info "Using Python: $PYTHON3 ($(${PYTHON3} --version 2>&1))  →  cp${PYVER_SHORT}"
-
-# ── Verify venv module works ──────────────────────────────────────────────────
-if ! "$PYTHON3" -m venv --help >/dev/null 2>&1; then
-    warn "python3-venv not working — trying to fix…"
-    sudo apt-get install -y -qq "${_py_pkg}-venv" python3-venv >/dev/null 2>&1 || true
-    "$PYTHON3" -m venv --help >/dev/null 2>&1 \
-        || error "Cannot create venvs. Run: sudo apt install ${_py_pkg}-venv"
+    sudo apt-get install -y python3.11 python3.11-venv python3.11-dev >> "$LOG_FILE" 2>&1 || true
+    command -v python3.11 &>/dev/null && { PYTHON_BIN="python3.11"; info "Using Python 3.11."; }
 fi
-info "venv module working ✔"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 5 — DIRECTORIES & PATH
-# ═══════════════════════════════════════════════════════════════════════════════
+# Refresh version vars
+_pv=$("$PYTHON_BIN" --version 2>/dev/null | grep -oP '\d+\.\d+' | head -1 || echo "$PYVER_RAW")
+PYVER_MAJOR=$(echo "$_pv" | cut -d. -f1)
+PYVER_MINOR=$(echo "$_pv" | cut -d. -f2)
+unset _pv
+
+# Install version-specific venv packages
+info "Installing python${PYVER_MAJOR}.${PYVER_MINOR}-venv…"
+sudo apt-get install -y \
+    "python${PYVER_MAJOR}.${PYVER_MINOR}-venv" \
+    "python${PYVER_MAJOR}.${PYVER_MINOR}-dev" \
+    "python${PYVER_MAJOR}.${PYVER_MINOR}-full" \
+    >> "$LOG_FILE" 2>&1 || warn "Some Python venv packages failed (non-fatal)."
+
+# Bootstrap pip
+if ! "$PYTHON_BIN" -m pip --version &>/dev/null 2>&1; then
+    info "Bootstrapping pip via get-pip.py…"
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$TEMP_DIR/get-pip.py" \
+        && "$PYTHON_BIN" "$TEMP_DIR/get-pip.py" --quiet \
+        && rm -f "$TEMP_DIR/get-pip.py" \
+        || warn "get-pip.py bootstrap failed."
+fi
+"$PYTHON_BIN" -m pip install --upgrade pip --quiet >> "$LOG_FILE" 2>&1 || true
+info "pip $("$PYTHON_BIN" -m pip --version 2>/dev/null | awk '{print $2}') ✓"
+
+# venv smoke test
+_tv="$TEMP_DIR/.test_venv_$$"
+if "$PYTHON_BIN" -m venv "$_tv" >> "$LOG_FILE" 2>&1; then
+    rm -rf "$_tv"; info "Python venv: OK"
+else
+    sudo apt-get install -y "python${PYVER_MAJOR}.${PYVER_MINOR}-venv" >> "$LOG_FILE" 2>&1 || true
+    "$PYTHON_BIN" -m venv "$_tv" >> "$LOG_FILE" 2>&1 \
+        || error "Python venv still failing. Run: sudo apt-get install python${PYVER_MAJOR}.${PYVER_MINOR}-venv"
+    rm -rf "$_tv"; info "Python venv: OK (after reinstall)"
+fi
+unset _tv
+export PYTHON_BIN
+
+# =============================================================================
+# STEP 6 — DIRECTORIES & PATH
+# =============================================================================
 step "Directories & PATH"
 
-mkdir -p "$BIN_DIR" "$CONFIG_DIR" "$GUI_DIR" \
-         "$GGUF_MODELS" "$OLLAMA_MODELS" "$TEMP_DIR" \
-         "$WORK_DIR" "$PKG_CACHE_DIR"
-
-# Add BIN_DIR to PATH if not already there
-if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    export PATH="$BIN_DIR:$PATH"
-fi
-
-# Persist PATH in .bashrc idempotently
-if ! grep -q "# llm-auto-setup PATH" "$HOME/.bashrc" 2>/dev/null; then
-    cat >> "$HOME/.bashrc" <<EOF
-
-# llm-auto-setup PATH
-export PATH="\$HOME/.local/bin:\$PATH"
-EOF
-fi
-
+mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" \
+         "$BIN_DIR" "$CONFIG_DIR" "$GUI_DIR" "$WORK_DIR"
 info "Directories created."
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 6 — SAVE MODEL CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Save model config"
+# Add BIN_DIR to PATH (idempotent)
+export PATH="$BIN_DIR:$PATH"
+if ! grep -q "# llm-auto-setup PATH" "$HOME/.bashrc" 2>/dev/null; then
+    {   printf '\n# llm-auto-setup PATH\n'
+        printf '[[ ":$PATH:" != *":%s:"* ]] && export PATH="%s:$PATH"\n' "$BIN_DIR" "$BIN_DIR"
+    } >> "$HOME/.bashrc"
+    info "Added $BIN_DIR to PATH in ~/.bashrc"
+fi
 
-mkdir -p "$CONFIG_DIR"
-cat > "${MODEL_CONFIG}.tmp" <<EOF
+# Terminal syntax highlighting (bat + grc)
+if ! grep -q "# llm-bat-grc" "$HOME/.bashrc" 2>/dev/null; then
+    cat >> "$HOME/.bashrc" <<'BATGRC'
+
+# ── Terminal syntax highlighting — llm-auto-setup ─────────────────────────────────
+# llm-bat-grc
+if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then alias bat='batcat'; fi
+if command -v bat &>/dev/null; then
+    alias cat='bat --paging=never --style=plain'
+    alias less='bat --paging=always'
+    export MANPAGER='sh -c "col -bx | bat --language=man --style=plain --paging=always"'
+fi
+if command -v grc &>/dev/null; then
+    alias diff='grc diff'; alias make='grc make'
+    alias gcc='grc gcc';   alias g++='grc g++'
+    alias ping='grc ping'; alias ps='grc ps'
+fi
+# end llm-bat-grc
+BATGRC
+    info "Terminal syntax highlighting configured."
+fi
+
+# =============================================================================
+# STEP 7 — SAVE MODEL CONFIG
+# =============================================================================
+step "Saving model config"
+
+OLLAMA_TAG=$(basename "${M[file]}" .gguf \
+    | sed -E 's/-([Qq][0-9].*)$/:\1/' \
+    | tr '[:upper:]' '[:lower:]')
+
+cat > "$MODEL_CONFIG" <<CONF
 MODEL_NAME="${M[name]}"
-MODEL_FILE="${M[file]}"
 MODEL_URL="${M[url]}"
+MODEL_FILENAME="${M[file]}"
+MODEL_SIZE="${M[tier]}"
 MODEL_CAPS="${M[caps]}"
-OLLAMA_TAG="${OLLAMA_TAG}"
-GPU_LAYERS="${GPU_LAYERS}"
-CPU_LAYERS="${CPU_LAYERS}"
-BATCH_SIZE="${BATCH}"
-HW_THREADS="${HW_THREADS}"
-VENV_DIR="${VENV_DIR}"
-GGUF_MODELS="${GGUF_MODELS}"
-OLLAMA_MODELS="${OLLAMA_MODELS}"
-EOF
-mv "${MODEL_CONFIG}.tmp" "$MODEL_CONFIG"
+MODEL_LAYERS="${M[layers]}"
+GPU_LAYERS="$GPU_LAYERS"
+CPU_LAYERS="$CPU_LAYERS"
+HW_THREADS="$HW_THREADS"
+BATCH="$BATCH"
+OLLAMA_TAG="$OLLAMA_TAG"
+CONF
 info "Config saved: $MODEL_CONFIG"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 7 — CUDA TOOLKIT (NVIDIA only)
-# ═══════════════════════════════════════════════════════════════════════════════
-step "CUDA toolkit"
+# =============================================================================
+# STEP 8 — OLLAMA  (installed BEFORE Python venv — needs zstd already present)
+# Locked to v0.12.3 — v0.12.4+ has RTX 30xx / Ampere GPU offload regression
+# =============================================================================
+step "Ollama v${OLLAMA_LOCKED_VER} (locked — RTX 30xx fix)"
 
+_ollama_ver_ok() {
+    local _cv; _cv=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "0.0.0")
+    [[ "$_cv" == "$OLLAMA_LOCKED_VER" ]]
+}
+
+if command -v ollama &>/dev/null && _ollama_ver_ok; then
+    info "Ollama $OLLAMA_LOCKED_VER already installed ✓"
+else
+    if command -v ollama &>/dev/null; then
+        _cv=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
+        warn "Ollama $_cv detected — downgrading to $OLLAMA_LOCKED_VER (RTX 30xx GPU offload fix)"
+        # Stop any running instance
+        pkill -f "ollama serve" 2>/dev/null || true
+        sudo systemctl stop ollama 2>/dev/null || true
+        sleep 1
+    else
+        info "Installing Ollama $OLLAMA_LOCKED_VER…"
+    fi
+
+    # Download exact locked binary directly (bypasses install.sh which always fetches latest)
+    _pbar 5 "Downloading ollama binary"
+    if sudo curl -fsSL --progress-bar -o /usr/local/bin/ollama "$OLLAMA_LOCKED_URL" 2>>"$LOG_FILE"; then
+        sudo chmod +x /usr/local/bin/ollama
+        _pbar 100 "Ollama $OLLAMA_LOCKED_VER installed"; _pbar_done
+    else
+        _pbar_done
+        warn "Direct download failed — trying OLLAMA_VERSION env with install.sh…"
+        retry 3 10 bash -c "OLLAMA_VERSION=${OLLAMA_LOCKED_VER} curl -fsSL https://ollama.com/install.sh | sh" </dev/null \
+            || error "Ollama install failed."
+    fi
+
+    # Create ollama user/group if missing (install.sh normally does this)
+    id -u ollama &>/dev/null || \
+        sudo useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama >> "$LOG_FILE" 2>&1 || true
+    sudo usermod -aG ollama "$USER" >> "$LOG_FILE" 2>&1 || true
+    unset _cv
+fi
+
+# Verify locked version
+_vcheck=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
+if [[ "$_vcheck" == "$OLLAMA_LOCKED_VER" ]]; then
+    info "Ollama version: $_vcheck ✓ (locked)"
+else
+    warn "Ollama version: $_vcheck (expected $OLLAMA_LOCKED_VER — may have issues on RTX 30xx)"
+fi
+unset _vcheck
+
+# Configure Ollama environment
+OLLAMA_PARALLEL=1
+(( TOTAL_RAM_GB >= 32 )) && OLLAMA_PARALLEL=2
+
+if is_wsl2; then
+    # WSL2: write ollama-start launcher
+    cat > "$BIN_DIR/ollama-start" <<OLWSL
+#!/usr/bin/env bash
+# ollama-start — start Ollama in WSL2 background
+export OLLAMA_MODELS="$OLLAMA_MODELS"
+export OLLAMA_HOST="127.0.0.1:11434"
+export OLLAMA_NUM_PARALLEL=$OLLAMA_PARALLEL
+export OLLAMA_MAX_LOADED_MODELS=1
+export OLLAMA_NUM_THREAD=$HW_THREADS
+export OLLAMA_ORIGINS="*"
+export OLLAMA_FLASH_ATTENTION=1
+export OLLAMA_KV_CACHE_TYPE=q8_0
+export CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
+pgrep -f "ollama serve" >/dev/null 2>&1 && { echo "Ollama already running."; exit 0; }
+echo "Starting Ollama $OLLAMA_LOCKED_VER…"
+nohup ollama serve >"\$HOME/.ollama.log" 2>&1 &
+sleep 3
+pgrep -f "ollama serve" >/dev/null && echo "Ollama started ✓" \
+    || { echo "ERROR — check: cat ~/.ollama.log"; exit 1; }
+OLWSL
+    chmod +x "$BIN_DIR/ollama-start"
+    "$BIN_DIR/ollama-start" || warn "ollama-start returned non-zero."
+else
+    # Native Linux: configure systemd service
+    sudo mkdir -p /etc/systemd/system/ollama.service.d
+    sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null <<OLOV
+[Service]
+Environment="OLLAMA_MODELS=$OLLAMA_MODELS"
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+Environment="OLLAMA_NUM_PARALLEL=$OLLAMA_PARALLEL"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_THREAD=$HW_THREADS"
+Environment="OLLAMA_ORIGINS=*"
+Environment="OLLAMA_FLASH_ATTENTION=1"
+Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+OLOV
+    sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
+    sudo systemctl enable ollama  >> "$LOG_FILE" 2>&1 || warn "systemctl enable ollama failed."
+    sudo systemctl restart ollama >> "$LOG_FILE" 2>&1 || warn "systemctl restart ollama failed."
+
+    cat > "$BIN_DIR/ollama-start" <<'OLNAT'
+#!/usr/bin/env bash
+# ollama-start — start/check Ollama systemd service
+systemctl is-active --quiet ollama 2>/dev/null \
+    && echo "Ollama already running." \
+    || { echo "Starting Ollama service…"
+         sudo systemctl start ollama \
+             && echo "Ollama started ✓" \
+             || echo "ERROR: check: sudo journalctl -u ollama -n 30"; }
+OLNAT
+    chmod +x "$BIN_DIR/ollama-start"
+fi
+
+sleep 3
+if is_wsl2; then
+    pgrep -f "ollama serve" >/dev/null && info "Ollama running ✓" || warn "Ollama not running — try: ollama-start"
+else
+    sudo systemctl is-active --quiet ollama && info "Ollama service active ✓" || warn "Ollama not active — try: ollama-start"
+fi
+
+# =============================================================================
+# STEP 9 — CUDA / ROCm TOOLKIT
+# =============================================================================
 if (( HAS_NVIDIA )); then
+    step "CUDA toolkit (NVIDIA)"
+
     setup_cuda_env() {
+        local cb=""
         for _p in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
-            [[ -d "$_p" ]] && export PATH="$_p:$PATH"
+            [[ -d "$_p" ]] && { cb="$_p"; break; }
         done
-        local _nvcc
-        _nvcc=$(command -v nvcc 2>/dev/null \
-            || find /usr/local/cuda*/bin -name nvcc 2>/dev/null | head -1 \
-            || true)
-        [[ -n "$_nvcc" ]] && export PATH="$(dirname "$_nvcc"):$PATH"
+        if [[ -n "$cb" ]] && [[ ":$PATH:" != *":$cb:"* ]]; then
+            export PATH="$cb:$PATH"
+            ! grep -q "# CUDA — llm-auto-setup" "$HOME/.bashrc" 2>/dev/null && {
+                printf '\n# CUDA — llm-auto-setup\nexport PATH="%s:$PATH"\n' "$cb" >> "$HOME/.bashrc"
+            }
+            info "CUDA bin: $cb"
+        fi
+        local nvcc_p; nvcc_p=$(command -v nvcc 2>/dev/null \
+            || find /usr/local/cuda* /usr/bin -name nvcc 2>/dev/null | head -1 || true)
+        [[ -n "$nvcc_p" ]] && export PATH="$(dirname "$nvcc_p"):$PATH"
     }
 
-    # Check if nvcc exists
-    _cuda_found=0
-    _cuda_installed_method=""
+    CUDA_PRESENT=0
+    command -v nvcc &>/dev/null && CUDA_PRESENT=1
+    for _p in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
+        [[ -d "$_p" ]] && { CUDA_PRESENT=1; break; }
+    done
+    ldconfig -p 2>/dev/null | grep -q 'libcudart\.so\.12' && CUDA_PRESENT=1
+    dpkg -l 'cuda-toolkit-*' 2>/dev/null | grep -q '^ii' && CUDA_PRESENT=1
 
-    command -v nvcc &>/dev/null && { _cuda_found=1; _cuda_installed_method="nvcc in PATH"; }
-
-    if (( !_cuda_found )); then
-        for _d in /usr/local/cuda*/bin; do
-            [[ -f "$_d/nvcc" ]] && { _cuda_found=1; _cuda_installed_method="found in $_d"; break; }
-        done
-    fi
-
-    if (( !_cuda_found )); then
-        ldconfig -p 2>/dev/null | grep -q "libcudart\.so\.12" && { _cuda_found=1; _cuda_installed_method="libcudart.so.12 in ldconfig"; }
-    fi
-
-    if (( !_cuda_found )); then
-        dpkg -l 'cuda-toolkit-*' 2>/dev/null | grep -q '^ii' && { _cuda_found=1; _cuda_installed_method="cuda-toolkit dpkg"; }
-    fi
-
-    if (( _cuda_found )); then
-        info "CUDA already present ($_cuda_installed_method)"
+    if (( CUDA_PRESENT )); then
+        info "CUDA already installed ✓"
         setup_cuda_env
     else
-        info "CUDA toolkit not found — installing from NVIDIA keyring…"
-        _codename=$(get_distro_codename)
-        # Build numeric form: noble→2404, jammy→2204, focal→2004
-        _ubuntu_num=$(lsb_release -rs 2>/dev/null | tr -d '.' || echo "2204")
-        _cuda_keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${_ubuntu_num}/x86_64/cuda-keyring_1.1-1_all.deb"
-        _cuda_keyring_fallback="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb"
-
-        spin_start "Downloading CUDA keyring (Ubuntu ${_ubuntu_num})…"
-        wget -q -O "/tmp/cuda-keyring.deb" "$_cuda_keyring_url" 2>/dev/null \
-            || wget -q -O "/tmp/cuda-keyring.deb" "$_cuda_keyring_fallback" 2>/dev/null \
-            || warn "Could not download CUDA keyring — trying nvidia-cuda-toolkit fallback"
-        spin_stop $?
-
-        if [[ -f /tmp/cuda-keyring.deb ]]; then
-            sudo dpkg -i /tmp/cuda-keyring.deb >/dev/null 2>&1 || warn "dpkg cuda-keyring failed"
-            sudo apt-get update -qq >/dev/null 2>&1 || true
-            spin_start "Installing CUDA toolkit…"
-            # Try newest first, fall back to older versions
-            sudo apt-get install -y -qq "cuda-toolkit-12-8" >/dev/null 2>&1 \
-                || sudo apt-get install -y -qq "cuda-toolkit-12-6" >/dev/null 2>&1 \
-                || sudo apt-get install -y -qq "cuda-toolkit-12-4" >/dev/null 2>&1 \
-                || sudo apt-get install -y -qq "cuda-toolkit-12-2" >/dev/null 2>&1 \
-                || sudo apt-get install -y -qq "cuda-toolkit-12-0" >/dev/null 2>&1 \
-                || warn "cuda-toolkit install failed via keyring — trying nvidia-cuda-toolkit…"
-            spin_stop $?
-            setup_cuda_env
+        info "Installing CUDA toolkit…"
+        _uv="${UBUNTU_VER//./}"
+        [[ "$_uv" != "2204" && "$_uv" != "2404" ]] && warn "Ubuntu $UBUNTU_VER not tested — attempting anyway."
+        _kr="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${_uv}/x86_64/cuda-keyring_1.1-1_all.deb"
+        _pbar 5 "CUDA keyring download"
+        if _download "$_kr" "$TEMP_DIR/cuda-keyring.deb" "CUDA keyring"; then
+            sudo dpkg -i "$TEMP_DIR/cuda-keyring.deb" >> "$LOG_FILE" 2>&1 || true
+            rm -f "$TEMP_DIR/cuda-keyring.deb"
+            _pbar 30 "apt update for CUDA repo"
+            sudo apt-get update -qq >> "$LOG_FILE" 2>&1 || true
+            _cuda_pkg=$(apt-cache search --names-only '^cuda-toolkit-12-' 2>/dev/null \
+                | awk '{print $1}' | sort -V | tail -1 || true)
+            [[ -z "$_cuda_pkg" ]] && _cuda_pkg="cuda-toolkit"
+            _pbar 50 "apt: $_cuda_pkg"
+            sudo apt-get install -y "$_cuda_pkg" >> "$LOG_FILE" 2>&1 \
+                || warn "CUDA install returned non-zero — may still work."
+            _pbar_done
+        else
+            warn "CUDA keyring download failed — trying nvidia-cuda-toolkit fallback."
+            sudo apt-get install -y nvidia-cuda-toolkit >> "$LOG_FILE" 2>&1 || warn "Fallback CUDA install failed."
         fi
-
-        # Final fallback: distro's nvidia-cuda-toolkit (older but works for many cases)
-        if ! command -v nvcc &>/dev/null; then
-            spin_start "Trying nvidia-cuda-toolkit (distro fallback)…"
-            sudo apt-get install -y -qq nvidia-cuda-toolkit >/dev/null 2>&1 || warn "nvidia-cuda-toolkit also failed"
-            spin_stop $?
-            setup_cuda_env
-        fi
-
-        # Write CUDA PATH to bashrc regardless of install method
-        if command -v nvcc &>/dev/null; then
-            _nvcc_dir=$(dirname "$(command -v nvcc)")
-            _cuda_base=$(dirname "$_nvcc_dir")
-            grep -q "# cuda-path-llm" "$HOME/.bashrc" 2>/dev/null || cat >> "$HOME/.bashrc" <<CUDA_EOF
-
-# cuda-path-llm
-export PATH="${_nvcc_dir}:\$PATH"
-export LD_LIBRARY_PATH="${_cuda_base}/lib64:\${LD_LIBRARY_PATH:-}"
-CUDA_EOF
-            export PATH="${_nvcc_dir}:$PATH"
-            export LD_LIBRARY_PATH="${_cuda_base}/lib64:${LD_LIBRARY_PATH:-}"
-            info "CUDA PATH written to ~/.bashrc ✔"
-        fi
+        sudo ldconfig 2>/dev/null || true
+        setup_cuda_env
+        unset _uv _kr _cuda_pkg
     fi
 
-    # Fix libcudart.so.12 for Ollama
-    _cuda_found=0
-    ldconfig -p 2>/dev/null | grep -q "libcudart\.so\.12" && _cuda_found=1
-
-    if (( !_cuda_found )); then
-        _cuda_lib_path=""
+    # libcudart resolution — Ollama bundles CUDA libs; register them if system doesn't have them
+    if ! ldconfig -p 2>/dev/null | grep -q "libcudart\.so\.12"; then
         for _d in \
             /usr/local/lib/ollama/cuda_v12 \
             /usr/local/lib/ollama/cuda_v11 \
             /usr/local/cuda/lib64 \
-            /usr/local/cuda-12*/lib64 \
-            /usr/local/cuda-11*/lib64 \
+            /usr/local/cuda-1[23]/lib64 \
             /usr/lib/x86_64-linux-gnu; do
-            [[ -f "$_d/libcudart.so.12" || -f "$_d/libcudart.so" ]] \
-                && { _cuda_lib_path="$_d"; _cuda_found=1; break; }
+            if [[ -f "$_d/libcudart.so.12" || -f "$_d/libcudart.so" ]]; then
+                info "Registering libcudart from: $_d"
+                echo "$_d" | sudo tee /etc/ld.so.conf.d/ollama-cuda.conf > /dev/null
+                sudo ldconfig
+                ! grep -q "# ollama-cuda-ld" "$HOME/.bashrc" 2>/dev/null && \
+                    printf '\n# ollama-cuda-ld\nexport LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' "$_d" >> "$HOME/.bashrc"
+                export LD_LIBRARY_PATH="$_d:${LD_LIBRARY_PATH:-}"
+                break
+            fi
         done
+        unset _d
+    fi
+    ldconfig -p 2>/dev/null | grep -q "libcudart" && info "libcudart.so found in ldconfig ✓" \
+        || warn "libcudart not found — GPU inference may fail. Try: sudo apt install cuda-libraries-12-0"
+fi
 
-        if [[ -n "$_cuda_lib_path" ]]; then
-            echo "$_cuda_lib_path" | sudo tee /etc/ld.so.conf.d/ollama-cuda.conf >/dev/null
-            sudo ldconfig
-            grep -q "# ollama-cuda-ld" "$HOME/.bashrc" 2>/dev/null || \
-                printf '\n# ollama-cuda-ld\nexport LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' \
-                    "$_cuda_lib_path" >> "$HOME/.bashrc"
-            export LD_LIBRARY_PATH="$_cuda_lib_path:${LD_LIBRARY_PATH:-}"
-            info "libcudart registered via ldconfig ✔ (persists across reboots)"
+if (( HAS_AMD && !HAS_NVIDIA )); then
+    step "ROCm toolkit (AMD)"
+
+    setup_rocm_env() {
+        local rl=""
+        for _r in /opt/rocm/lib /opt/rocm-*/lib /usr/lib/x86_64-linux-gnu; do
+            [[ -f "$_r/libhipblas.so" || -f "$_r/librocblas.so" ]] && { rl="$_r"; break; }
+        done
+        [[ -z "$rl" ]] && rl="/opt/rocm/lib"
+        export LD_LIBRARY_PATH="$rl:${LD_LIBRARY_PATH:-}"
+        export PATH="/opt/rocm/bin:$PATH"
+        ! grep -q "# ROCm — llm-auto-setup" "$HOME/.bashrc" 2>/dev/null && {
+            printf '\n# ROCm — llm-auto-setup\nexport PATH="/opt/rocm/bin:$PATH"\n' >> "$HOME/.bashrc"
+            printf 'export LD_LIBRARY_PATH="%s:${LD_LIBRARY_PATH:-}"\n' "$rl" >> "$HOME/.bashrc"
+        }
+        info "ROCm env: $rl"
+    }
+
+    ROCM_PRESENT=0
+    { command -v rocminfo &>/dev/null || [[ -d /opt/rocm ]]; } && ROCM_PRESENT=1
+
+    if (( ROCM_PRESENT )); then
+        info "ROCm already installed ✓"
+        setup_rocm_env
+    else
+        info "Installing ROCm via amdgpu-install…"
+        _uv=$(lsb_release -rs 2>/dev/null || echo "unknown")
+        _base="https://repo.radeon.com/amdgpu-install/latest/ubuntu/${_uv}/"
+        _deb=$(wget -qO- "$_base" 2>/dev/null | grep -oP 'amdgpu-install_[^"]+_all\.deb' | tail -1 \
+            || echo "amdgpu-install_6.3.60300-1_all.deb")
+        if _download "${_base}${_deb}" "$TEMP_DIR/amdgpu-install.deb" "ROCm installer"; then
+            sudo dpkg -i "$TEMP_DIR/amdgpu-install.deb" >> "$LOG_FILE" 2>&1 || true
+            sudo apt-get update -qq >> "$LOG_FILE" 2>&1 || true
+            rm -f "$TEMP_DIR/amdgpu-install.deb"
+            sudo amdgpu-install --usecase=rocm --no-dkms -y >> "$LOG_FILE" 2>&1 \
+                || warn "amdgpu-install returned non-zero."
         else
-            warn "libcudart.so.12 not found — GPU inference may fail."
-            warn "  Try: sudo apt-get install cuda-libraries-12-0"
+            warn "amdgpu-install download failed — trying fallback apt path…"
+            wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key 2>/dev/null \
+                | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm.gpg || true
+            echo "deb [arch=amd64] https://repo.radeon.com/rocm/apt/6.3 ${_uv} main" \
+                | sudo tee /etc/apt/sources.list.d/rocm.list > /dev/null
+            sudo apt-get update -qq >> "$LOG_FILE" 2>&1 || true
+            sudo apt-get install -y rocm-hip-sdk rocm-opencl-sdk >> "$LOG_FILE" 2>&1 \
+                || warn "ROCm apt install failed — see rocm.docs.amd.com"
         fi
-    else
-        info "libcudart.so.12 found in ldconfig ✔"
+        sudo usermod -aG render,video "$USER" >> "$LOG_FILE" 2>&1 || true
+        setup_rocm_env
+        unset _uv _base _deb
     fi
-else
-    info "Skipping CUDA setup (no NVIDIA GPU detected)."
 fi
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 7b — ROCm TOOLKIT (AMD only)
-# ═══════════════════════════════════════════════════════════════════════════════
-step "ROCm toolkit"
-
-if (( HAS_AMD_GPU )); then
-    if command -v rocminfo &>/dev/null; then
-        info "ROCm already installed: $(rocminfo 2>/dev/null | grep 'ROCm Runtime' | head -1 || echo 'version unknown')"
-    else
-        info "Installing ROCm hip SDK…"
-        spin_start "Adding ROCm apt repo…"
-        wget -q -O /tmp/amdgpu-install.deb \
-            "https://repo.radeon.com/amdgpu-install/6.1.3/ubuntu/$(get_distro_codename)/amdgpu-install_6.1.60103-1_all.deb" \
-            2>/dev/null || warn "Could not download amdgpu-install"
-        spin_stop $?
-
-        if [[ -f /tmp/amdgpu-install.deb ]]; then
-            sudo dpkg -i /tmp/amdgpu-install.deb >/dev/null 2>&1 || warn "dpkg amdgpu-install failed"
-            sudo apt-get update -qq >/dev/null 2>&1 || true
-            spin_start "Installing rocm-hip-sdk…"
-            sudo apt-get install -y -qq rocm-hip-sdk >/dev/null 2>&1 || warn "rocm-hip-sdk install failed"
-            spin_stop $?
-        fi
-    fi
-
-    # Add user to render/video groups
-    for _g in render video; do
-        getent group "$_g" &>/dev/null && sudo usermod -aG "$_g" "$USER" 2>/dev/null || true
-    done
-else
-    info "Skipping ROCm setup (no AMD GPU detected)."
-fi
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 8 — OLLAMA  (installed BEFORE venv — needs zstd which we just installed)
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Ollama"
-
-_installed_ver=$(ollama --version 2>/dev/null | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-_latest_ver=$(curl -sf --max-time 8 \
-    "https://api.github.com/repos/ollama/ollama/releases/latest" \
-    | grep '"tag_name"' | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-
-if ! command -v ollama &>/dev/null; then
-    info "Installing Ollama (requires zstd — just installed)…"
-    curl -fsSL https://ollama.com/install.sh | sh 2>&1 | tee -a "$LOG_FILE" | tail -5 \
-        || error "Ollama installation failed. Check $LOG_FILE"
-elif _ver_gt "$_latest_ver" "$_installed_ver"; then
-    info "Upgrading Ollama: $_installed_ver → $_latest_ver"
-    curl -fsSL https://ollama.com/install.sh | sh 2>&1 | tee -a "$LOG_FILE" | tail -3 \
-        || warn "Ollama upgrade failed"
-else
-    info "Ollama ${_installed_ver} is up to date."
-fi
-
-# Configure OLLAMA_MODELS
-mkdir -p "$OLLAMA_MODELS"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 9 — PYTHON VENV (main inference venv)
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Python venv (main inference)"
-
-_ensure_venv() {
-    local _vdir="$1"
-    if [[ ! -d "$_vdir/bin" ]] || [[ ! -x "$_vdir/bin/python3" ]]; then
-        spin_start "Creating venv at $_vdir…"
-        "$PYTHON3" -m venv "$_vdir" 2>&1 | tee -a "$LOG_FILE" | tail -3
-        local _rc=${PIPESTATUS[0]}
-        spin_stop $_rc
-        if (( _rc != 0 )); then
-            warn "venv creation failed for $_vdir — trying --without-pip…"
-            "$PYTHON3" -m venv --without-pip "$_vdir" || error "Cannot create venv at $_vdir"
-            curl -sS https://bootstrap.pypa.io/get-pip.py | "$_vdir/bin/python3" >/dev/null 2>&1 || warn "pip bootstrap failed"
-        fi
-    else
-        info "Venv exists: $_vdir"
-    fi
-    # Upgrade pip/setuptools/wheel in this venv
-    "$_vdir/bin/python3" -m pip install --upgrade pip setuptools wheel --quiet 2>/dev/null \
-        || warn "pip upgrade had warnings in $_vdir"
-}
+# =============================================================================
+# STEP 10 — MAIN PYTHON VENV + llama-cpp-python
+# =============================================================================
+step "Python venv + llama-cpp-python"
 
 _ensure_venv "$VENV_DIR"
+# shellcheck source=/dev/null
+source "$VENV_DIR/bin/activate" || error "Failed to activate venv: $VENV_DIR"
+[[ "${VIRTUAL_ENV:-}" != "$VENV_DIR" ]] && error "Venv activation sanity check failed."
+info "Venv: $VIRTUAL_ENV"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 10 — LLAMA-CPP-PYTHON
-# ═══════════════════════════════════════════════════════════════════════════════
-step "llama-cpp-python"
+# Shared cmake args
+CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+(( HAS_NVIDIA  )) && CMAKE_ARGS+=" -DGGML_CUDA=ON -DLLAMA_CUBLAS=ON"
+(( HAS_AVX512  )) && CMAKE_ARGS+=" -DGGML_AVX512=ON -DGGML_AVX2=ON -DGGML_FMA=ON"
+(( !HAS_AVX512 && HAS_AVX2 )) && CMAKE_ARGS+=" -DGGML_AVX2=ON -DGGML_FMA=ON"
+(( !HAS_AVX2   && HAS_AVX  )) && CMAKE_ARGS+=" -DGGML_AVX=ON"
+(( HAS_NEON    )) && CMAKE_ARGS+=" -DGGML_NEON=ON"
+export SOURCE_BUILD_CMAKE_ARGS="$CMAKE_ARGS"
 
-_install_llama_cpp_python() {
+LLAMA_INSTALLED=0
+check_llama() { "$VENV_DIR/bin/python3" -c "import llama_cpp" 2>/dev/null; }
+
+# Try pre-built CUDA wheels (fast — no compilation)
+if (( HAS_NVIDIA )); then
+    CUDA_VER=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -1 || true)
+    [[ -z "$CUDA_VER" ]] && CUDA_VER="${CUDA_VER_SMI:-12.1}"
+    CUDA_TAG="cu$(echo "$CUDA_VER" | tr -d '.')"
+    info "CUDA $CUDA_VER → wheel tag $CUDA_TAG"
+
+    _WTAGS=("$CUDA_TAG" "cu124" "cu122" "cu121" "cu120")
+    _widx=0
+    for _wt in "${_WTAGS[@]}"; do
+        (( _widx++ ))
+        _pbar $(( _widx * 100 / ${#_WTAGS[@]} )) "CUDA wheel: $_wt"
+        pip install llama-cpp-python \
+            --index-url "https://abetlen.github.io/llama-cpp-python/whl/${_wt}" \
+            --extra-index-url https://pypi.org/simple \
+            --quiet >> "$LOG_FILE" 2>&1 \
+            && { _pbar_done; info "CUDA wheel OK: $_wt"; LLAMA_INSTALLED=1; break; }
+    done
+    _pbar_done
+    unset _WTAGS _widx _wt
+fi
+
+# Try pre-built ROCm wheels
+if (( HAS_AMD && !HAS_NVIDIA && LLAMA_INSTALLED == 0 )); then
+    for _wt in "rocm600" "rocm550"; do
+        _pbar 50 "ROCm wheel: $_wt"
+        pip install llama-cpp-python \
+            --index-url "https://abetlen.github.io/llama-cpp-python/whl/${_wt}" \
+            --extra-index-url https://pypi.org/simple \
+            --quiet >> "$LOG_FILE" 2>&1 \
+            && { _pbar_done; info "ROCm wheel OK: $_wt"; LLAMA_INSTALLED=1; break; }
+    done
+    _pbar_done
+    unset _wt
+fi
+
+# Source build fallback
+if (( LLAMA_INSTALLED == 0 )); then
     if (( HAS_NVIDIA )); then
-        # Try pre-built wheel first — attempt multiple CUDA version matches
-        local _lcpp_ver="0.3.4"
-        local _cuda_short=""
-        _cuda_short=$(nvcc --version 2>/dev/null | grep -oP 'release [0-9]+\.[0-9]+' | grep -oP '[0-9]+\.[0-9]+' | head -1 \
-            || echo "${CUDA_VER_SMI:-12.6}")
-        local _cu="${_cuda_short//./}"
-        local _cuda_tag="cu${_cu}"
-
-        local _wheel_url="https://github.com/abetlen/llama-cpp-python/releases/download/v${_lcpp_ver}-${_cuda_tag}/llama_cpp_python-${_lcpp_ver}-cp${PYVER_SHORT}-cp${PYVER_SHORT}-linux_x86_64.whl"
-        info "Trying pre-built CUDA wheel (${_cuda_tag}, cp${PYVER_SHORT})…"
-
-        if "$VENV_DIR/bin/pip" install --quiet "$_wheel_url" 2>/dev/null; then
-            info "Pre-built CUDA wheel installed ✔"
-            return 0
-        fi
-
-        # Try cu121 fallback (widely available)
-        local _fallback_url="https://github.com/abetlen/llama-cpp-python/releases/download/v${_lcpp_ver}-cu121/llama_cpp_python-${_lcpp_ver}-cp${PYVER_SHORT}-cp${PYVER_SHORT}-linux_x86_64.whl"
-        if "$VENV_DIR/bin/pip" install --quiet "$_fallback_url" 2>/dev/null; then
-            info "Pre-built CUDA wheel (cu121 fallback) installed ✔"
-            return 0
-        fi
-
-        warn "Pre-built wheel failed — source build (5-15 min, needs build-essential + CUDA headers)…"
-        spin_start "Building llama-cpp-python from source (CUDA)…"
-        CMAKE_ARGS="-DGGML_CUDA=on" \
-            FORCE_CMAKE=1 \
-            "$VENV_DIR/bin/pip" install llama-cpp-python --no-cache-dir \
-            2>&1 | tee -a "$LOG_FILE" | tail -5
-        spin_stop ${PIPESTATUS[0]}
-
-    elif (( HAS_AMD_GPU )); then
-        spin_start "Building llama-cpp-python from source (ROCm/HIP)…"
-        CMAKE_ARGS="-DGGML_HIPBLAS=on" \
-            "$VENV_DIR/bin/pip" install llama-cpp-python --no-cache-dir \
-            2>&1 | tee -a "$LOG_FILE" | tail -5
-        spin_stop ${PIPESTATUS[0]}
-
+        warn "No pre-built CUDA wheel — source build (~5 min)…"
+        _pip_with_ticker "Building llama-cpp-python (CUDA)" \
+            pip install llama-cpp-python --no-cache-dir
+    elif (( HAS_AMD )); then
+        warn "No pre-built ROCm wheel — source build (~8 min)…"
+        _pip_with_ticker "Building llama-cpp-python (ROCm)" \
+            env MAKE_JOBS="$HW_THREADS" CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DGGML_HIPBLAS=ON" \
+            pip install llama-cpp-python --no-cache-dir
     else
-        spin_start "Installing llama-cpp-python (CPU-only)…"
-        "$VENV_DIR/bin/pip" install llama-cpp-python --quiet 2>/dev/null
-        spin_stop $?
-    fi
-}
-
-# Check if already installed and working
-if ! "$VENV_DIR/bin/python3" -c "from llama_cpp import Llama" 2>/dev/null; then
-    _install_llama_cpp_python
-else
-    info "llama-cpp-python already installed ✔"
-fi
-
-# Verify
-if "$VENV_DIR/bin/python3" -c "from llama_cpp import Llama; print('llama-cpp-python OK')" 2>/dev/null; then
-    info "llama-cpp-python import OK ✔"
-else
-    warn "llama-cpp-python import failed — run-gguf will not work, but Ollama inference still works."
-    warn "  To fix: sudo apt install build-essential g++ clang, then re-run this script."
-fi
-
-# Systemd service (non-WSL)
-if ! is_wsl2 && command -v systemctl &>/dev/null; then
-    _svc_dir="/etc/systemd/system"
-    _svc_file="$_svc_dir/ollama.service"
-    if [[ ! -f "$_svc_file" ]] || ! grep -q "OLLAMA_NUM_PARALLEL" "$_svc_file" 2>/dev/null; then
-        info "Writing Ollama systemd service…"
-        sudo tee "$_svc_file" >/dev/null <<EOF
-[Unit]
-Description=Ollama Service
-After=network-online.target
-
-[Service]
-Type=simple
-User=${USER}
-ExecStart=/usr/local/bin/ollama serve
-Environment="OLLAMA_HOST=0.0.0.0:11434"
-Environment="OLLAMA_KEEP_ALIVE=30m"
-Environment="OLLAMA_NUM_PARALLEL=1"
-Environment="OLLAMA_MAX_LOADED_MODELS=1"
-Environment="OLLAMA_MODELS=${OLLAMA_MODELS}"
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        sudo systemctl daemon-reload 2>/dev/null || true
-        sudo systemctl enable ollama 2>/dev/null || true
-        sudo systemctl restart ollama 2>/dev/null || true
+        info "CPU-only build (~3 min)…"
+        _pip_with_ticker "Building llama-cpp-python (CPU)" \
+            env MAKE_JOBS="$HW_THREADS" CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
+            pip install llama-cpp-python --no-cache-dir
     fi
 fi
 
-# WSL2 launcher
-cat > "${BIN_DIR}/ollama-start" <<EOF
-#!/usr/bin/env bash
-# WSL2 has no systemd by default — start Ollama in the background
-export OLLAMA_MODELS="${OLLAMA_MODELS}"
-export OLLAMA_HOST="0.0.0.0:11434"
-export OLLAMA_KEEP_ALIVE="30m"
-export OLLAMA_NUM_PARALLEL=1
-export OLLAMA_MAX_LOADED_MODELS=1
-mkdir -p "\$HOME/.ollama"
-nohup ollama serve >"\$HOME/.ollama/ollama.log" 2>&1 &
-echo "Ollama started (PID \$!). Log: ~/.ollama/ollama.log"
-EOF
-chmod +x "${BIN_DIR}/ollama-start"
+check_llama && info "llama-cpp-python ✓" \
+    || warn "llama-cpp-python import failed — check CUDA/ROCm paths and re-run."
 
-start_ollama_if_needed
+deactivate 2>/dev/null || true
 
-info "Ollama ready."
-
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # STEP 11 — MODEL DOWNLOAD
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 step "Model download"
 
-_model_path="$GGUF_MODELS/${M[file]}"
-_needs_download=1
+if ask_yes_no "Download ${M[name]} (~${M[size_gb]} GB) now?"; then
+    mkdir -p "$GGUF_MODELS"
 
-if [[ -f "$_model_path" ]]; then
-    _expected_size=$(( M[size_gb] * 900 * 1024 * 1024 ))
-    _actual_size=$(stat -c%s "$_model_path" 2>/dev/null || echo 0)
-    if (( _actual_size >= _expected_size )); then
-        info "Model already downloaded: ${M[file]} ($(( _actual_size / 1024 / 1024 / 1024 ))GB)"
-        _needs_download=0
+    # Check for existing file first (resume-safe)
+    _existing=$(find "$GGUF_MODELS" -maxdepth 1 -name "${M[file]}" -size +1M 2>/dev/null | head -1 || true)
+    if [[ -n "$_existing" ]]; then
+        info "Model already on disk: $_existing ($(du -sh "$_existing" | cut -f1)) — skipping download."
     else
-        warn "Partial download detected (${_actual_size} bytes) — re-downloading."
-        rm -f "$_model_path"
+        _download "${M[url]}" "$GGUF_MODELS/${M[file]}" "Model: ${M[name]}"
+    fi
+    unset _existing
+
+    if [[ -f "$GGUF_MODELS/${M[file]}" ]]; then
+        info "Model ready: $(du -sh "$GGUF_MODELS/${M[file]}" | cut -f1)"
+
+        # Register with Ollama
+        if command -v ollama &>/dev/null; then
+            info "Registering with Ollama as: $OLLAMA_TAG"
+            _mf="$TEMP_DIR/Modelfile.$$"
+
+            # Build system prompt based on capabilities
+            _sys="You are a helpful AI assistant."
+            [[ "${M[caps]}" == *"TOOLS"* ]] && \
+                _sys="You are a helpful AI assistant with tool-calling capabilities. When tools are provided respond in the exact JSON schema specified."
+            [[ "${M[caps]}" == *"THINK"* ]] && \
+                _sys="${_sys} You can reason step by step before giving your final answer."
+
+            cat > "$_mf" <<MFILE
+FROM $GGUF_MODELS/${M[file]}
+SYSTEM ${_sys}
+PARAMETER num_thread $HW_THREADS
+PARAMETER num_ctx 8192
+PARAMETER num_gpu 999
+MFILE
+            unset _sys
+
+            start_ollama_if_needed
+            if ollama create "$OLLAMA_TAG" -f "$_mf" >> "$LOG_FILE" 2>&1; then
+                info "Registered: $OLLAMA_TAG ✓"
+            else
+                warn "ollama create failed — model won't appear in WebUI until registered."
+                warn "  Retry: ollama create $OLLAMA_TAG -f $GGUF_MODELS/${M[file]}"
+            fi
+            rm -f "$_mf"; unset _mf
+        fi
+    else
+        warn "Model download failed. Resume manually:"
+        warn "  curl -L -C - -o '$GGUF_MODELS/${M[file]}' '${M[url]}'"
     fi
 fi
 
-if (( _needs_download )); then
-    highlight "Downloading ${M[name]} (${M[size_gb]}GB) — this may take a while…"
-    echo -e "  ${MUTED}URL: ${M[url]}${NC}"
-    echo ""
-    wget --progress=bar:force:noscroll \
-         --retry-connrefused --tries=3 \
-         -O "$_model_path" "${M[url]}" \
-        || error "Model download failed: ${M[url]}"
-    info "Download complete: $_model_path"
-fi
-
-# Register model with Ollama via Modelfile
-start_ollama_if_needed
-
-# Determine chat template based on model family
-_template=""
-case "${M[file]}" in
-    *Qwen3*|*Qwen2*|*qwen*)
-        _template='{{ if .System }}<|im_start|>system\n{{ .System }}<|im_end|>\n{{ end }}{{ range .Messages }}<|im_start|>{{ .Role }}\n{{ .Content }}<|im_end|>\n{{ end }}<|im_start|>assistant\n'
-        ;;
-    *Llama-3*|*llama-3*)
-        _template='{{ if .System }}<|start_header_id|>system<|end_header_id|>\n\n{{ .System }}<|eot_id|>{{ end }}{{ range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>\n\n{{ .Content }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>\n\n'
-        ;;
-    *Phi-4*|*phi-4*)
-        _template='{{ if .System }}<|system|>{{ .System }}<|end|>{{ end }}{{ range .Messages }}<|{{ .Role }}|>{{ .Content }}<|end|>{{ end }}<|assistant|>'
-        ;;
-    *gemma*|*Gemma*)
-        _template='<start_of_turn>user\n{{ .Prompt }}<end_of_turn>\n<start_of_turn>model\n'
-        ;;
-    *Mistral*|*mistral*)
-        _template='[INST] {{ if .System }}{{ .System }}\n\n{{ end }}{{ .Prompt }} [/INST]'
-        ;;
-    *DeepSeek*)
-        _template='{{ if .System }}<|begin▁of▁sentence|>{{ .System }}{{ end }}{{ range .Messages }}<|User|>{{ if eq .Role "user" }}{{ .Content }}{{ else }}{{ .Content }}<|Assistant|>{{ end }}{{ end }}'
-        ;;
-    *)
-        _template='{{ if .System }}### System:\n{{ .System }}\n\n{{ end }}### Human:\n{{ .Prompt }}\n### Assistant:\n'
-        ;;
-esac
-
-_modelfile_path="$TEMP_DIR/Modelfile.${OLLAMA_TAG}"
-cat > "$_modelfile_path" <<EOF
-FROM ${_model_path}
-TEMPLATE "${_template}"
-PARAMETER num_gpu ${GPU_LAYERS}
-PARAMETER num_thread ${HW_THREADS}
-PARAMETER num_batch ${BATCH}
-EOF
-
-info "Registering model with Ollama as '${OLLAMA_TAG}'…"
-ollama create "$OLLAMA_TAG" -f "$_modelfile_path" 2>&1 | tail -3 || warn "ollama create had warnings"
-info "Model registered: $OLLAMA_TAG"
-
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # STEP 12 — HELPER SCRIPTS
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 step "Helper scripts"
 
-# ── llm-show-config ──────────────────────────────────────────────────────────
-cat > "${BIN_DIR}/llm-show-config" <<'SCRIPT_EOF'
-#!/usr/bin/env bash
-CONFIG="$HOME/.config/local-llm/selected_model.conf"
-[[ -f "$CONFIG" ]] && source "$CONFIG"
-C='\033[0;36m'; Y='\033[1;33m'; G='\033[0;32m'; M='\033[38;5;240m'; N='\033[0m'; B='\033[1m'
-_TW=$(( $(tput cols 2>/dev/null || echo 80) < 120 ? $(tput cols 2>/dev/null || echo 80) : 120 ))
-_rule() { printf "${M}%*s${N}\n" "$_TW" "" | tr ' ' "─"; }
+# ── run-gguf ─────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/run-gguf" <<'PYEOF'
+#!/usr/bin/env python3
+"""Run a GGUF model directly via llama-cpp-python."""
+import sys, os, glob, argparse
 
-echo ""
-_rule
-echo -e "${B}${C}  LOCAL LLM — Configuration & Status${N}"
-_rule
-echo ""
-echo -e "  ${B}Paths${N}"
-printf "  ${Y}%-22s${N}  %s\n" "GGUF models"     "${GGUF_MODELS:-$HOME/local-llm-models/gguf}"
-printf "  ${Y}%-22s${N}  %s\n" "Ollama models"   "${OLLAMA_MODELS:-$HOME/local-llm-models/ollama}"
-printf "  ${Y}%-22s${N}  %s\n" "Config"          "${CONFIG}"
-printf "  ${Y}%-22s${N}  %s\n" "Main venv"       "${VENV_DIR:-$HOME/.local/share/llm-venv}"
-printf "  ${Y}%-22s${N}  %s\n" "WebUI venv"      "$HOME/.local/share/open-webui-venv"
-echo ""
-echo -e "  ${B}Active Model${N}"
-printf "  ${Y}%-22s${N}  %s\n" "Name"            "${MODEL_NAME:-not set}"
-printf "  ${Y}%-22s${N}  %s\n" "Ollama tag"      "${OLLAMA_TAG:-not set}"
-printf "  ${Y}%-22s${N}  %s\n" "GPU layers"      "${GPU_LAYERS:-?}"
-printf "  ${Y}%-22s${N}  %s\n" "Batch size"      "${BATCH_SIZE:-?}"
-printf "  ${Y}%-22s${N}  %s\n" "HW threads"      "${HW_THREADS:-?}"
-echo ""
-echo -e "  ${B}Service Status${N}"
-if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    echo -e "  ${G}✓${N}  Ollama  running at http://127.0.0.1:11434"
-    _models=$(curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); [print('      '+m['name']) for m in d.get('models',[])]" 2>/dev/null || true)
-    [[ -n "$_models" ]] && echo -e "${M}  Loaded models:${N}" && echo "$_models"
-else
-    echo -e "  ${Y}○${N}  Ollama  stopped"
-fi
-if curl -sf --max-time 2 http://127.0.0.1:8080 >/dev/null 2>&1; then
-    echo -e "  ${G}✓${N}  Open WebUI  running at http://127.0.0.1:8080"
-else
-    echo -e "  ${Y}○${N}  Open WebUI  stopped"
-fi
-echo ""
-_rule
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-show-config"
+MODEL_DIR  = os.path.expanduser("~/local-llm-models/gguf")
+CONFIG_DIR = os.path.expanduser("~/.config/local-llm")
+VENV_SITE  = os.path.expanduser("~/.local/share/llm-venv/lib")
+
+for _sp in glob.glob(os.path.join(VENV_SITE, "python3*/site-packages")):
+    if _sp not in sys.path:
+        sys.path.insert(0, _sp)
+
+def load_cfg():
+    p = os.path.join(CONFIG_DIR, "selected_model.conf")
+    cfg = {}
+    if os.path.exists(p):
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line and not line.startswith('#'):
+                    k, _, v = line.partition('=')
+                    cfg[k] = v.strip('"')
+    return cfg
+
+def list_models():
+    models = sorted(glob.glob(os.path.join(MODEL_DIR, "*.gguf")))
+    if not models:
+        print("No GGUF models in", MODEL_DIR); return
+    print("Available models:")
+    for m in models:
+        print(f"  {os.path.basename(m):<55} {os.path.getsize(m)/1024**3:.1f} GB")
+
+def main():
+    cfg = load_cfg()
+    p   = argparse.ArgumentParser(description="Run a GGUF model")
+    p.add_argument("model",  nargs="?")
+    p.add_argument("prompt", nargs="*")
+    p.add_argument("--gpu-layers", type=int, default=None)
+    p.add_argument("--ctx",        type=int, default=8192)
+    p.add_argument("--max-tokens", type=int, default=512)
+    p.add_argument("--threads",    type=int, default=int(cfg.get("HW_THREADS", 4)))
+    p.add_argument("--batch",      type=int, default=int(cfg.get("BATCH", 256)))
+    args = p.parse_args()
+
+    if not args.model:
+        list_models(); sys.exit(0)
+
+    path = args.model if os.path.isabs(args.model) else os.path.join(MODEL_DIR, args.model)
+    if not os.path.exists(path):
+        print(f"Not found: {path}"); list_models(); sys.exit(1)
+
+    prompt     = " ".join(args.prompt) if args.prompt else "Hello!"
+    gpu_layers = args.gpu_layers if args.gpu_layers is not None else int(cfg.get("GPU_LAYERS", 0))
+
+    try:
+        from llama_cpp import Llama
+        print(f"Loading {os.path.basename(path)} | GPU:{gpu_layers} threads:{args.threads} batch:{args.batch}")
+        llm = Llama(model_path=path, n_gpu_layers=gpu_layers,
+                    n_threads=args.threads, n_batch=args.batch,
+                    verbose=False, n_ctx=args.ctx)
+        out = llm(prompt, max_tokens=args.max_tokens, echo=True, temperature=0.7, top_p=0.95)
+        print(out["choices"][0]["text"])
+    except ImportError:
+        print("ERROR: llama_cpp not found — activate venv: source ~/.local/share/llm-venv/bin/activate")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr); sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+PYEOF
+chmod +x "$BIN_DIR/run-gguf"
 
 # ── llm-stop ─────────────────────────────────────────────────────────────────
-cat > "${BIN_DIR}/llm-stop" <<'SCRIPT_EOF'
+cat > "$BIN_DIR/llm-stop" <<'STOP'
 #!/usr/bin/env bash
-G='\033[0;32m'; Y='\033[1;33m'; N='\033[0m'
-echo -e "\n  Stopping LLM services…\n"
+# llm-stop — stop Ollama, Open WebUI, and Neural Terminal
+_wsl2() { grep -qi microsoft /proc/version 2>/dev/null; }
+echo "Stopping local LLM services…"
 
-# Ollama
-if pgrep -x ollama >/dev/null 2>&1; then
-    pkill -TERM -x ollama 2>/dev/null && sleep 1 || true
-    pgrep -x ollama >/dev/null 2>&1 && pkill -KILL -x ollama 2>/dev/null || true
-    echo -e "  ${G}✓${N}  Ollama stopped."
+if _wsl2 || ! systemctl is-active --quiet ollama 2>/dev/null; then
+    pgrep -f "ollama serve" >/dev/null && { pkill -f "ollama serve" && echo "✓ Ollama stopped."; } \
+        || echo "  Ollama: not running."
 else
-    echo -e "  ${Y}○${N}  Ollama was not running."
+    sudo systemctl stop ollama && echo "✓ Ollama service stopped." || echo "Could not stop Ollama."
 fi
 
-# Open WebUI (port 8080)
-_pid=$(ss -lptn 'sport = :8080' 2>/dev/null \
-    | awk 'NR>1{match($NF,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1 || true)
-if [[ -n "$_pid" ]]; then
-    kill "$_pid" 2>/dev/null && echo -e "  ${G}✓${N}  Open WebUI stopped (pid $_pid)." || true
-else
-    echo -e "  ${Y}○${N}  Open WebUI was not running."
-fi
+pgrep -f "open-webui" >/dev/null && { pkill -f "open-webui" && echo "✓ Open WebUI stopped."; } \
+    || echo "  Open WebUI: not running."
 
-# Neural Terminal (port 8090)
-pkill -f "python.*8090" 2>/dev/null && echo -e "  ${G}✓${N}  Neural Terminal stopped." || true
+pgrep -f "http.server.*8090" >/dev/null && { pkill -f "http.server.*8090" && echo "✓ Neural Terminal stopped."; } \
+    || echo "  Neural Terminal: not running."
 
-echo ""
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-stop"
+echo "Done."
+STOP
+chmod +x "$BIN_DIR/llm-stop"
 
 # ── llm-update ───────────────────────────────────────────────────────────────
-cat > "${BIN_DIR}/llm-update" <<'SCRIPT_EOF'
+cat > "$BIN_DIR/llm-update" <<UPDEOF
 #!/usr/bin/env bash
-G='\033[0;32m'; Y='\033[1;33m'; N='\033[0m'; B='\033[1m'
-echo -e "\n  ${B}Updating local LLM stack…${N}\n"
+# llm-update — update Open WebUI and pip packages; Ollama is NEVER upgraded
+set -uo pipefail
 
-_ver_gt() { [[ "$(printf '%s\n%s' "$1" "$2" | sort -V | tail -1)" == "$1" && "$1" != "$2" ]]; }
+OLLAMA_LOCKED="${OLLAMA_LOCKED_VER}"
+OWUI_VENV="\$HOME/.local/share/open-webui-venv"
+CONFIG="\$HOME/.config/local-llm/selected_model.conf"
 
-# Ollama
-_cur=$(ollama --version 2>/dev/null | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-_new=$(curl -sf --max-time 8 "https://api.github.com/repos/ollama/ollama/releases/latest" \
-    | grep '"tag_name"' | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-if _ver_gt "$_new" "$_cur"; then
-    echo -e "  Upgrading Ollama: $_cur → $_new"
-    curl -fsSL https://ollama.com/install.sh | sh
+echo ""
+echo "═══════════════════════════════════  LLM Stack Updater  ═══════════════════════════════════"
+echo ""
+
+# ── Ollama: enforce locked version, never upgrade ──────────────────────────────────────────────
+echo "[ 1/3 ] Checking Ollama version…"
+_cur=\$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "0.0.0")
+echo "  Installed: \$_cur  |  Locked: \$OLLAMA_LOCKED (RTX 30xx GPU fix — NEVER upgrade)"
+if [[ "\$_cur" != "\$OLLAMA_LOCKED" ]]; then
+    echo "  WARNING: version drifted — reinstalling locked v\${OLLAMA_LOCKED}…"
+    _url="https://github.com/ollama/ollama/releases/download/v\${OLLAMA_LOCKED}/ollama-linux-amd64"
+    if sudo curl -fsSL -o /usr/local/bin/ollama "\$_url"; then
+        sudo chmod +x /usr/local/bin/ollama
+        echo "  ✓ Locked to v\$OLLAMA_LOCKED"
+    else
+        echo "  ✗ Could not download locked binary — leaving as-is."
+    fi
 else
-    echo -e "  ${G}✓${N}  Ollama $_cur is current."
+    echo "  ✓ Ollama v\$OLLAMA_LOCKED is correct — NOT upgrading."
 fi
+unset _cur _url
 
-# Open WebUI
-_owui_venv="$HOME/.local/share/open-webui-venv"
-if [[ -f "$_owui_venv/bin/pip" ]]; then
-    echo -e "  Upgrading Open WebUI…"
-    "$_owui_venv/bin/pip" install --upgrade open-webui --quiet \
-        && echo -e "  ${G}✓${N}  Open WebUI upgraded." \
-        || echo -e "  ${Y}⚠${N}  Open WebUI upgrade had warnings."
-fi
-
-# Re-pull active Ollama model
-CONFIG="$HOME/.config/local-llm/selected_model.conf"
-if [[ -f "$CONFIG" ]]; then
-    _tag=$(grep ^OLLAMA_TAG= "$CONFIG" | cut -d'"' -f2)
-    if [[ -n "$_tag" ]]; then
-        echo -e "  Pulling latest ollama model: $_tag"
-        ollama pull "$_tag" || echo -e "  ${Y}⚠${N}  ollama pull had warnings."
-    fi
-fi
-
-echo -e "\n  ${G}✓${N}  Update complete.\n"
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-update"
-
-# ── llm-switch ───────────────────────────────────────────────────────────────
-cat > "${BIN_DIR}/llm-switch" <<'HEREDOC'
-#!/usr/bin/env bash
-# llm-switch — change the active model without re-running setup
-CONFIG="$HOME/.config/local-llm/selected_model.conf"
-GGUF_MODELS="$HOME/local-llm-models/gguf"
-C='\033[0;36m'; Y='\033[1;33m'; G='\033[0;32m'; N='\033[0m'; B='\033[1m'; M='\033[38;5;240m'
-_TW=$(( $(tput cols 2>/dev/null || echo 80) < 120 ? $(tput cols 2>/dev/null || echo 80) : 120 ))
-_rule() { printf "${M}%*s${N}\n" "$_TW" "" | tr ' ' "─"; }
-_is_installed() { [[ -f "$GGUF_MODELS/$1" ]] && echo " ✔" || echo "  "; }
-
-declare -A _N _Q _F _U _S _L _V _CP _T
-_define_model() {
-    local i="$1"; _N[$i]="$2"; _Q[$i]="$3"; _F[$i]="$4"
-    _U[$i]="https://huggingface.co/$5/resolve/main/$4"
-    _S[$i]="$6"; _L[$i]="$7"; _V[$i]="$8"; _CP[$i]="$9"; _T[$i]="${10}"
-}
-_define_model  1  "Qwen3-1.7B"           "Q8"  "Qwen_Qwen3-1.7B-Q8_0.gguf"         "bartowski/Qwen_Qwen3-1.7B-GGUF"           2   28  "CPU"   "★ TOOLS · THINK"                "CPU / No GPU needed"
-_define_model  2  "Qwen3-4B"             "Q4"  "Qwen_Qwen3-4B-Q4_K_M.gguf"         "bartowski/Qwen_Qwen3-4B-GGUF"             3   36  "~3GB"  "★ TOOLS · THINK"                "CPU / No GPU needed"
-_define_model  3  "Phi-4-mini 3.8B"      "Q4"  "Phi-4-mini-instruct-Q4_K_M.gguf"   "bartowski/Phi-4-mini-instruct-GGUF"       3   32  "CPU"   "★ TOOLS · THINK"                "CPU / No GPU needed"
-_define_model  4  "Qwen3-0.6B"           "Q8"  "Qwen_Qwen3-0.6B-Q8_0.gguf"         "bartowski/Qwen_Qwen3-0.6B-GGUF"           1   28  "CPU"   "TOOLS · THINK · tiny"           "CPU / No GPU needed"
-_define_model  5  "Qwen3-8B"             "Q4"  "Qwen_Qwen3-8B-Q4_K_M.gguf"         "bartowski/Qwen_Qwen3-8B-GGUF"             5   36  "~5GB"  "★ TOOLS · THINK"                "6-8 GB VRAM"
-_define_model  6  "Qwen3-8B"             "Q6"  "Qwen_Qwen3-8B-Q6_K.gguf"           "bartowski/Qwen_Qwen3-8B-GGUF"             6   36  "~6GB"  "★ TOOLS · THINK · higher quality" "6-8 GB VRAM"
-_define_model  7  "DeepSeek-R1-Distill-8B"  "Q4"  "DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf"  "bartowski/DeepSeek-R1-Distill-Qwen-8B-GGUF"  5  36  "~5GB"  "THINK · deep reasoning"  "6-8 GB VRAM"
-_define_model  8  "Gemma-3-9B"           "Q4"  "google_gemma-3-9b-it-Q4_K_M.gguf"  "bartowski/google_gemma-3-9b-it-GGUF"      6   46  "~6GB"  "TOOLS · Google"                 "6-8 GB VRAM"
-_define_model  9  "Gemma-3-12B"          "Q4"  "google_gemma-3-12b-it-Q4_K_M.gguf" "bartowski/google_gemma-3-12b-it-GGUF"     8   46  "~8GB"  "TOOLS · Google vision"          "6-8 GB VRAM"
-_define_model 10  "Dolphin3.0-8B"        "Q4"  "dolphin3.0-qwen2.5-7b-Q4_K_M.gguf" "bartowski/dolphin3.0-qwen2.5-7b-GGUF"    5   28  "~5GB"  "UNCENSORED"                     "6-8 GB VRAM"
-_define_model 11  "Phi-4-14B"            "Q4"  "phi-4-Q4_K_M.gguf"                 "bartowski/phi-4-GGUF"                     9   40  "~9GB"  "★ TOOLS · top coding + math"    "10-12 GB VRAM"
-_define_model 12  "Qwen3-14B"            "Q4"  "Qwen_Qwen3-14B-Q4_K_M.gguf"        "bartowski/Qwen_Qwen3-14B-GGUF"            9   40  "~9GB"  "★ TOOLS · THINK"                "10-12 GB VRAM"
-_define_model 13  "DeepSeek-R1-Distill-14B" "Q4" "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf" "bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF" 9 40 "~9GB" "THINK · deep reasoning"  "10-12 GB VRAM"
-_define_model 14  "Gemma-3-27B"          "Q4"  "google_gemma-3-27b-it-Q4_K_M.gguf" "bartowski/google_gemma-3-27b-it-GGUF"    12   46  "~12GB" "TOOLS · Google"                 "16 GB VRAM"
-_define_model 15  "Mistral-Small-3.1-24B" "Q4" "Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf" "bartowski/Mistral-Small-3.1-24B-Instruct-2503-GGUF" 14 40 "~14GB" "TOOLS · THINK · 128K context" "16 GB VRAM"
-_define_model 16  "Mistral-Small-3.2-24B" "Q4" "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf" "bartowski/Mistral-Small-3.2-24B-Instruct-2506-GGUF" 14 40 "~14GB" "★ TOOLS · THINK · newest" "16 GB VRAM"
-_define_model 17  "Qwen3-30B-A3B (MoE)"  "Q4"  "Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"   "bartowski/Qwen_Qwen3-30B-A3B-GGUF"       16   48  "~16GB" "★ TOOLS · THINK · 30B@8B speed" "16 GB VRAM"
-_define_model 18  "Qwen3-32B"            "Q4"  "Qwen_Qwen3-32B-Q4_K_M.gguf"        "bartowski/Qwen_Qwen3-32B-GGUF"           19   64  "~19GB" "★ TOOLS · THINK"                "24+ GB VRAM"
-_define_model 19  "DeepSeek-R1-Distill-32B" "Q4" "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf" "bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF" 19 64 "~19GB" "THINK · deep reasoning" "24+ GB VRAM"
-_define_model 20  "Gemma-3-27B (Google)" "Q4"  "google_gemma-3-27b-it-Q4_K_M.gguf" "bartowski/google_gemma-3-27b-it-GGUF"    16   46  "~16GB" "TOOLS · Google"                 "24+ GB VRAM"
-_define_model 21  "Llama-3.3-70B"        "Q4"  "Llama-3.3-70B-Instruct-Q4_K_M.gguf" "bartowski/Llama-3.3-70B-Instruct-GGUF"  40   80  "~40GB" "★ TOOLS · flagship"             "48 GB VRAM (multi-GPU)"
-
+# ── Open WebUI ─────────────────────────────────────────────────────────────────────────────────
 echo ""
-_rule
-printf "  ${B}%-4s  %-32s  %-6s  %-7s  %-2s  %s${N}\n" "#" "Model" "Quant" "VRAM" "" "Capabilities"
-_rule
-_last_tier=""
-for _i in $(seq 1 21); do
-    if [[ "${_T[$_i]}" != "$_last_tier" ]]; then
-        echo ""
-        echo -e "  ${Y}▸  ${_T[$_i]}${N}"
-        _last_tier="${_T[$_i]}"
+echo "[ 2/3 ] Updating Open WebUI…"
+if [[ -d "\$OWUI_VENV" ]]; then
+    OLD=\$("\$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print \$2}' || echo "?")
+    "\$OWUI_VENV/bin/pip" install --upgrade open-webui --quiet \
+        && NEW=\$("\$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print \$2}' || echo "?") \
+        && echo "  ✓ Open WebUI: \$OLD → \$NEW" \
+        || echo "  ✗ Open WebUI update failed."
+else
+    echo "  Open WebUI venv not found — run: llm-setup to reinstall."
+fi
+
+# ── Pip packages across all venvs ───────────────────────────────────────────────────────────────
+echo ""
+echo "[ 3/3 ] Upgrading pip packages in all venvs…"
+for _v in llm-venv aider-venv open-interpreter-venv; do
+    _vp="\$HOME/.local/share/\$_v"
+    if [[ -x "\$_vp/bin/pip" ]]; then
+        echo "  Updating \$_v…"
+        "\$_vp/bin/pip" install --upgrade pip setuptools wheel --quiet 2>/dev/null || true
     fi
-    _chk=$(_is_installed "${_F[$_i]}")
-    printf "  %-4s  %-32s  %-6s  %-7s  %-2s  %s\n" \
-        "$_i" "${_N[$_i]}" "${_Q[$_i]}" "${_V[$_i]}" "$_chk" "${_CP[$_i]}"
 done
+unset _v _vp
+
 echo ""
-_rule
+echo "  ✓ Update complete. Run: exec bash"
+echo ""
+UPDEOF
+chmod +x "$BIN_DIR/llm-update"
 
-printf "  ${C}?${N}  ${B}Enter model number [1-21]:${N} "
-read -r _inp
-[[ ! "$_inp" =~ ^[0-9]+$ ]] || (( _inp < 1 || _inp > 21 )) && { echo "Invalid selection."; exit 1; }
+# ── llm-switch ─────────────────────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/llm-switch" <<'SWITCH'
+#!/usr/bin/env bash
+# llm-switch — change active model (updates config, no reinstall needed)
+CONFIG="$HOME/.config/local-llm/selected_model.conf"
+GGUF_DIR="$HOME/local-llm-models/gguf"
 
-_new_file="${_F[$_inp]}"
-_new_path="$GGUF_MODELS/$_new_file"
+[[ ! -f "$CONFIG" ]] && { echo "No config found — run: llm-setup"; exit 1; }
 
-if [[ ! -f "$_new_path" ]]; then
-    echo -e "\n  ${Y}⚠${N}  Model not downloaded. Downloading now…\n"
-    wget --progress=bar:force:noscroll --retry-connrefused --tries=3 \
-        -O "$_new_path" "${_U[$_inp]}" || { echo "Download failed."; exit 1; }
+echo ""
+echo "═══════════════════════════════════  MODEL SWITCHER  ═══════════════════════════════════"
+echo ""
+
+shopt -s nullglob
+_files=("$GGUF_DIR"/*.gguf)
+if [[ ${#_files[@]} -eq 0 ]]; then
+    echo "  No GGUF models in $GGUF_DIR"
+    echo "  Download more: llm-add"
+    exit 0
 fi
 
-_new_tag=$(echo "${_F[$_inp]}" | sed 's/\.gguf$//' | tr '[:upper:]' '[:lower:]' \
-    | sed 's/_/-/g; s/[^a-z0-9:-]//g; s/--*/-/g' | cut -c1-60)
+echo "  Available GGUF models:"
+_idx=0
+declare -a _map
+for _f in "${_files[@]}"; do
+    (( _idx++ ))
+    printf "  %-4s %s  (%s)\n" "$_idx" "$(basename "$_f")" "$(du -sh "$_f" | cut -f1)"
+    _map[$_idx]="$_f"
+done
 
-# Update config
-sed -i "s|^MODEL_NAME=.*|MODEL_NAME=\"${_N[$_inp]}\"|" "$CONFIG"
-sed -i "s|^MODEL_FILE=.*|MODEL_FILE=\"${_F[$_inp]}\"|" "$CONFIG"
-sed -i "s|^MODEL_URL=.*|MODEL_URL=\"${_U[$_inp]}\"|" "$CONFIG"
-sed -i "s|^OLLAMA_TAG=.*|OLLAMA_TAG=\"${_new_tag}\"|" "$CONFIG"
+echo ""
+read -r -p "  Select model number (Enter to cancel): " _ch
+
+[[ -z "$_ch" ]] && { echo "Cancelled."; exit 0; }
+_sel="${_map[$_ch]:-}"
+if [[ -z "$_sel" ]]; then echo "Invalid choice."; exit 1; fi
+
+_base=$(basename "$_sel")
+_new_tag=$(basename "$_sel" .gguf | sed -E 's/-([Qq][0-9].*)$/:\1/' | tr '[:upper:]' '[:lower:]')
+
+sed -i "s|^MODEL_FILENAME=.*|MODEL_FILENAME=\"$_base\"|"       "$CONFIG"
+sed -i "s|^OLLAMA_TAG=.*|OLLAMA_TAG=\"$_new_tag\"|"            "$CONFIG"
+
+echo ""
+echo "  ✓ Active model set to: $_base"
+echo "  ✓ Ollama tag: $_new_tag"
+echo ""
+echo "  Register with Ollama:"
+echo "    ollama create $_new_tag -f $_sel"
+echo ""
+SWITCH
+chmod +x "$BIN_DIR/llm-switch"
+
+# ── llm-add ────────────────────────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/llm-add" <<ADDEOF
+#!/usr/bin/env bash
+# llm-add — download additional GGUF models and register with Ollama
+set -uo pipefail
+
+GGUF_DIR="\$HOME/local-llm-models/gguf"
+TEMP_DIR="\$HOME/local-llm-models/temp"
+CONFIG="\$HOME/.config/local-llm/selected_model.conf"
+HW_THREADS=\$(nproc 2>/dev/null || echo 4)
+
+mkdir -p "\$GGUF_DIR" "\$TEMP_DIR"
+
+echo ""
+echo "══════════════════════════════════════  LLM ADD  ═══════════════════════════════════════"
+echo ""
+
+# ── Model catalog ──────────────────────────────────────────────────────────────────────────────
+echo "  Catalog (bartowski HuggingFace GGUF collection):"
+echo ""
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "#" "Model" "Quant" "VRAM" "Capabilities"
+printf "  ────  ────────────────────────────────  ─────  ───────  ──────────────────────────\n"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "1"  "Qwen3-1.7B"               "Q8"  "CPU"    "TOOLS · THINK · tiny"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "2"  "Qwen3-4B"                 "Q4"  "~3 GB"  "TOOLS · THINK"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "3"  "Qwen3-8B"                 "Q4"  "~5 GB"  "TOOLS · THINK"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "4"  "Qwen3-8B"                 "Q6"  "~6 GB"  "TOOLS · THINK · higher quality"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "5"  "Qwen3-14B"                "Q4"  "~9 GB"  "TOOLS · THINK"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "6"  "Phi-4-14B"                "Q4"  "~9 GB"  "TOOLS · THINK · coding"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "7"  "Mistral-Small-3.2-24B"    "Q4"  "~14 GB" "TOOLS · THINK"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "8"  "Qwen3-32B"                "Q4"  "~19 GB" "TOOLS · THINK"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "9"  "Llama-3.3-70B"            "Q4"  "~40 GB" "TOOLS · flagship"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "10" "DeepSeek-R1-Distill-8B"   "Q4"  "~5 GB"  "THINK · deep reasoning"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "11" "DeepSeek-R1-Distill-14B"  "Q4"  "~9 GB"  "THINK · deep reasoning"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "12" "Gemma-3-9B"               "Q4"  "~6 GB"  "TOOLS · Google"
+printf "  %-4s  %-32s  %-5s  %-7s  %s\n" "u"  "[enter URL]"              ""    ""       "Custom HuggingFace GGUF URL"
+echo ""
+read -r -p "  Choice: " _ch
+
+case "\${_ch:-}" in
+    1)  M_NAME="Qwen3-1.7B Q8_0"
+        M_FILE="Qwen_Qwen3-1.7B-Q8_0.gguf"
+        M_URL="https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q8_0.gguf" ;;
+    2)  M_NAME="Qwen3-4B Q4_K_M"
+        M_FILE="Qwen_Qwen3-4B-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf" ;;
+    3)  M_NAME="Qwen3-8B Q4_K_M"
+        M_FILE="Qwen_Qwen3-8B-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q4_K_M.gguf" ;;
+    4)  M_NAME="Qwen3-8B Q6_K"
+        M_FILE="Qwen_Qwen3-8B-Q6_K.gguf"
+        M_URL="https://huggingface.co/bartowski/Qwen_Qwen3-8B-GGUF/resolve/main/Qwen_Qwen3-8B-Q6_K.gguf" ;;
+    5)  M_NAME="Qwen3-14B Q4_K_M"
+        M_FILE="Qwen_Qwen3-14B-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/Qwen_Qwen3-14B-GGUF/resolve/main/Qwen_Qwen3-14B-Q4_K_M.gguf" ;;
+    6)  M_NAME="Phi-4-14B Q4_K_M"
+        M_FILE="phi-4-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf" ;;
+    7)  M_NAME="Mistral-Small-3.2-24B Q4_K_M"
+        M_FILE="mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF/resolve/main/mistralai_Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf" ;;
+    8)  M_NAME="Qwen3-32B Q4_K_M"
+        M_FILE="Qwen_Qwen3-32B-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF/resolve/main/Qwen_Qwen3-32B-Q4_K_M.gguf" ;;
+    9)  M_NAME="Llama-3.3-70B Q4_K_M"
+        M_FILE="Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/main/Llama-3.3-70B-Instruct-Q4_K_M.gguf" ;;
+    10) M_NAME="DeepSeek-R1-Distill-Qwen-8B Q4_K_M"
+        M_FILE="DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-8B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf" ;;
+    11) M_NAME="DeepSeek-R1-Distill-Qwen-14B Q4_K_M"
+        M_FILE="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf" ;;
+    12) M_NAME="Gemma-3-9B Q4_K_M"
+        M_FILE="google_gemma-3-9b-it-Q4_K_M.gguf"
+        M_URL="https://huggingface.co/bartowski/google_gemma-3-9b-it-GGUF/resolve/main/google_gemma-3-9b-it-Q4_K_M.gguf" ;;
+    u|U)
+        read -r -p "  HuggingFace GGUF URL: " M_URL
+        [[ -z "\${M_URL:-}" ]] && { echo "Cancelled."; exit 0; }
+        M_FILE=\$(basename "\$M_URL" | sed 's/?.*//') 
+        M_NAME="\$M_FILE" ;;
+    *)  echo "Invalid choice — exiting."; exit 0 ;;
+esac
+
+# Skip if already on disk
+if [[ -f "\$GGUF_DIR/\$M_FILE" ]] && [[ \$(stat -c%s "\$GGUF_DIR/\$M_FILE" 2>/dev/null || echo 0) -gt 1048576 ]]; then
+    echo "  ✓ Already on disk: \$(du -sh "\$GGUF_DIR/\$M_FILE" | cut -f1)"
+else
+    pushd "\$GGUF_DIR" >/dev/null
+    DL_OK=0
+    command -v aria2c &>/dev/null && \
+        aria2c --split=8 --max-connection-per-server=8 --continue=true --file-allocation=none \
+               -o "\$M_FILE" "\$M_URL" && DL_OK=1
+    (( DL_OK == 0 )) && curl -L -C - --progress-bar -o "\$M_FILE" "\$M_URL" && DL_OK=1
+    (( DL_OK == 0 )) && wget -c --show-progress -O "\$M_FILE" "\$M_URL" && DL_OK=1
+    (( DL_OK == 0 )) && { echo "✗ Download failed."; popd >/dev/null; exit 1; }
+    echo "  ✓ Downloaded: \$(du -sh "\$M_FILE" | cut -f1)"
+    popd >/dev/null
+fi
 
 # Register with Ollama
-_mf="$HOME/local-llm-models/temp/Modelfile.switch"
-mkdir -p "$HOME/local-llm-models/temp"
-cat > "$_mf" <<MF_EOF
-FROM ${_new_path}
-PARAMETER num_gpu -1
-PARAMETER num_thread 8
-PARAMETER num_batch 512
-MF_EOF
-
-if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    ollama create "$_new_tag" -f "$_mf" 2>&1 | tail -2 || echo "ollama create had warnings"
-    echo -e "\n  ${G}✓${N}  Switched to: ${_N[$_inp]} (${_new_tag})\n"
-else
-    echo -e "\n  ${Y}⚠${N}  Ollama not running. Start it with: ollama-start\n"
-fi
-HEREDOC
-chmod +x "${BIN_DIR}/llm-switch"
-
-# ── llm-add ──────────────────────────────────────────────────────────────────
-cat > "${BIN_DIR}/llm-add" <<'HEREDOC'
-#!/usr/bin/env bash
-# llm-add — download additional models from catalog
-GGUF_MODELS="$HOME/local-llm-models/gguf"
-Y='\033[1;33m'; G='\033[0;32m'; N='\033[0m'; B='\033[1m'; M='\033[38;5;240m'
-
-declare -A _N _F _U _S _V _CP _T
-_define_model() {
-    local i="$1"; _N[$i]="$2"; _F[$i]="$4"
-    _U[$i]="https://huggingface.co/$5/resolve/main/$4"
-    _S[$i]="$6"; _V[$i]="$8"; _CP[$i]="$9"; _T[$i]="${10}"
-}
-_define_model  1  "Qwen3-1.7B"           "Q8"  "Qwen_Qwen3-1.7B-Q8_0.gguf"         "bartowski/Qwen_Qwen3-1.7B-GGUF"           2   28  "CPU"   "★ TOOLS · THINK"                "CPU"
-_define_model  2  "Qwen3-4B"             "Q4"  "Qwen_Qwen3-4B-Q4_K_M.gguf"         "bartowski/Qwen_Qwen3-4B-GGUF"             3   36  "~3GB"  "★ TOOLS · THINK"                "CPU"
-_define_model  3  "Phi-4-mini 3.8B"      "Q4"  "Phi-4-mini-instruct-Q4_K_M.gguf"   "bartowski/Phi-4-mini-instruct-GGUF"       3   32  "CPU"   "★ TOOLS · THINK"                "CPU"
-_define_model  4  "Qwen3-0.6B"           "Q8"  "Qwen_Qwen3-0.6B-Q8_0.gguf"         "bartowski/Qwen_Qwen3-0.6B-GGUF"           1   28  "CPU"   "tiny"                           "CPU"
-_define_model  5  "Qwen3-8B Q4"          "Q4"  "Qwen_Qwen3-8B-Q4_K_M.gguf"         "bartowski/Qwen_Qwen3-8B-GGUF"             5   36  "~5GB"  "★ TOOLS · THINK"                "6GB"
-_define_model  6  "Qwen3-8B Q6"          "Q6"  "Qwen_Qwen3-8B-Q6_K.gguf"           "bartowski/Qwen_Qwen3-8B-GGUF"             6   36  "~6GB"  "higher quality"                 "6GB"
-_define_model  7  "DeepSeek-R1-8B"       "Q4"  "DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf"  "bartowski/DeepSeek-R1-Distill-Qwen-8B-GGUF"  5  36  "~5GB"  "reasoning"         "6GB"
-_define_model  8  "Gemma-3-9B"           "Q4"  "google_gemma-3-9b-it-Q4_K_M.gguf"  "bartowski/google_gemma-3-9b-it-GGUF"      6   46  "~6GB"  "Google"                         "6GB"
-_define_model  9  "Gemma-3-12B"          "Q4"  "google_gemma-3-12b-it-Q4_K_M.gguf" "bartowski/google_gemma-3-12b-it-GGUF"     8   46  "~8GB"  "Google vision"                  "8GB"
-_define_model 10  "Dolphin3.0-8B"        "Q4"  "dolphin3.0-qwen2.5-7b-Q4_K_M.gguf" "bartowski/dolphin3.0-qwen2.5-7b-GGUF"    5   28  "~5GB"  "UNCENSORED"                     "6GB"
-_define_model 11  "Phi-4-14B"            "Q4"  "phi-4-Q4_K_M.gguf"                 "bartowski/phi-4-GGUF"                     9   40  "~9GB"  "coding + math"                  "10GB"
-_define_model 12  "Qwen3-14B"            "Q4"  "Qwen_Qwen3-14B-Q4_K_M.gguf"        "bartowski/Qwen_Qwen3-14B-GGUF"            9   40  "~9GB"  "★ TOOLS · THINK"                "10GB"
-_define_model 13  "DeepSeek-R1-14B"      "Q4"  "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf" "bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF" 9 40 "~9GB" "reasoning"           "10GB"
-_define_model 14  "Gemma-3-27B"          "Q4"  "google_gemma-3-27b-it-Q4_K_M.gguf" "bartowski/google_gemma-3-27b-it-GGUF"    12   46  "~12GB" "Google"                         "16GB"
-_define_model 15  "Mistral-Small-3.1-24B" "Q4" "Mistral-Small-3.1-24B-Instruct-2503-Q4_K_M.gguf" "bartowski/Mistral-Small-3.1-24B-Instruct-2503-GGUF" 14 40 "~14GB" "128K context" "16GB"
-_define_model 16  "Mistral-Small-3.2-24B" "Q4" "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf" "bartowski/Mistral-Small-3.2-24B-Instruct-2506-GGUF" 14 40 "~14GB" "newest" "16GB"
-_define_model 17  "Qwen3-30B-A3B"        "Q4"  "Qwen_Qwen3-30B-A3B-Q4_K_M.gguf"   "bartowski/Qwen_Qwen3-30B-A3B-GGUF"       16   48  "~16GB" "MoE 30B@8B speed"               "16GB"
-_define_model 18  "Qwen3-32B"            "Q4"  "Qwen_Qwen3-32B-Q4_K_M.gguf"        "bartowski/Qwen_Qwen3-32B-GGUF"           19   64  "~19GB" "★ TOOLS · THINK"                "24GB"
-_define_model 19  "DeepSeek-R1-32B"      "Q4"  "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf" "bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF" 19 64 "~19GB" "reasoning"          "24GB"
-_define_model 20  "Gemma-3-27B (24GB)"   "Q4"  "google_gemma-3-27b-it-Q4_K_M.gguf" "bartowski/google_gemma-3-27b-it-GGUF"    16   46  "~16GB" "Google"                         "24GB"
-_define_model 21  "Llama-3.3-70B"        "Q4"  "Llama-3.3-70B-Instruct-Q4_K_M.gguf" "bartowski/Llama-3.3-70B-Instruct-GGUF"  40   80  "~40GB" "flagship"                       "48GB"
-
-echo ""
-echo -e "  ${B}Available models to download:${N}"
-echo ""
-_last_tier=""
-for _i in $(seq 1 21); do
-    [[ -f "$GGUF_MODELS/${_F[$_i]}" ]] && continue
-    if [[ "${_T[$_i]}" != "$_last_tier" ]]; then
-        echo -e "  ${Y}▸  ${_T[$_i]}${N}"
-        _last_tier="${_T[$_i]}"
+if command -v ollama &>/dev/null; then
+    _tag=\$(basename "\$M_FILE" .gguf | sed -E 's/-([Qq][0-9].*)$/:\1/' | tr '[:upper:]' '[:lower:]')
+    echo "  Registering with Ollama as: \$_tag"
+    _mf="\$TEMP_DIR/Modelfile.add.\$\$"
+    printf 'FROM %s\nPARAMETER num_gpu 999\nPARAMETER num_thread %s\nPARAMETER num_ctx 8192\n' \
+        "\$GGUF_DIR/\$M_FILE" "\$HW_THREADS" > "\$_mf"
+    if ! curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        nohup ollama serve >"\$HOME/.ollama.log" 2>&1 &
+        sleep 4
     fi
-    printf "  %-4s  %-32s  %-7s  %s\n" "$_i" "${_N[$_i]}" "${_V[$_i]}" "${_CP[$_i]}"
-done
+    ollama create "\$_tag" -f "\$_mf" && echo "  ✓ Registered: \$_tag" || echo "  ✗ ollama create failed."
+    rm -f "\$_mf"
+fi
 
 echo ""
-printf "  ${Y}?${N}  ${B}Enter numbers to download (space-separated) or Enter to cancel:${N} "
-read -r _sel
-[[ -z "$_sel" ]] && { echo "  No models selected."; exit 0; }
+read -r -p "  Set as active default? [y/N] " _sw
+[[ "\${_sw:-}" =~ ^[Yy]\$ && -f "\$CONFIG" ]] && {
+    _tag=\$(basename "\$M_FILE" .gguf | sed -E 's/-([Qq][0-9].*)$/:\1/' | tr '[:upper:]' '[:lower:]')
+    sed -i "s|^MODEL_NAME=.*|MODEL_NAME=\"\$M_NAME\"|"       "\$CONFIG"
+    sed -i "s|^MODEL_FILENAME=.*|MODEL_FILENAME=\"\$M_FILE\"|" "\$CONFIG"
+    sed -i "s|^OLLAMA_TAG=.*|OLLAMA_TAG=\"\$_tag\"|"          "\$CONFIG"
+    echo "  ✓ Active model updated."
+}
+echo ""
+ADDEOF
+chmod +x "$BIN_DIR/llm-add"
 
-for _n in $_sel; do
-    [[ ! "$_n" =~ ^[0-9]+$ ]] || (( _n < 1 || _n > 21 )) && continue
-    _fp="$GGUF_MODELS/${_F[$_n]}"
-    [[ -f "$_fp" ]] && { echo -e "  ${G}✓${N}  ${_N[$_n]} already downloaded."; continue; }
-    echo -e "\n  Downloading ${_N[$_n]}…"
-    wget --progress=bar:force:noscroll --retry-connrefused --tries=3 \
-        -O "$_fp" "${_U[$_n]}" \
-        && echo -e "  ${G}✓${N}  ${_N[$_n]} downloaded." \
-        || echo -e "  ${Y}⚠${N}  ${_N[$_n]} download failed."
-done
-HEREDOC
-chmod +x "${BIN_DIR}/llm-add"
-
-# ── local-models-info (llm-status) ───────────────────────────────────────────
-cat > "${BIN_DIR}/local-models-info" <<'SCRIPT_EOF'
+# ── local-models-info ──────────────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/local-models-info" <<'INFOEOF'
 #!/usr/bin/env bash
-G='\033[0;32m'; Y='\033[1;33m'; N='\033[0m'; B='\033[1m'; M='\033[38;5;240m'; C='\033[0;36m'
+_cfg="$HOME/.config/local-llm/selected_model.conf"
+_r() { grep "^${1}=" "$_cfg" 2>/dev/null | head -1 | cut -d'"' -f2; }
 echo ""
-echo -e "  ${B}${C}Local LLM Status${N}"
+echo "═══════════════════════════════════  INSTALLED MODELS  ═══════════════════════════════════"
 echo ""
-
-echo -e "  ${B}Ollama loaded models:${N}"
-if curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    ollama list 2>/dev/null | head -20 || echo "    (none)"
-    echo ""
-    echo -e "  ${B}Running:${N}"
-    ollama ps 2>/dev/null || echo "    (none)"
-else
-    echo -e "  ${Y}○${N}  Ollama not running. Run: ollama-start"
+echo "  Ollama models:"
+ollama list 2>/dev/null || echo "  (Ollama not running — run: ollama-start)"
+echo ""
+echo "  GGUF files ($HOME/local-llm-models/gguf):"
+shopt -s nullglob
+_fs=(~/local-llm-models/gguf/*.gguf)
+if [[ ${#_fs[@]} -eq 0 ]]; then echo "  (none)"; else
+    for _f in "${_fs[@]}"; do printf "  %-55s %s\n" "$(basename "$_f")" "$(du -sh "$_f" | cut -f1)"; done
 fi
-
 echo ""
-echo -e "  ${B}Downloaded GGUF files:${N}"
-_gguf_dir="$HOME/local-llm-models/gguf"
-if ls "$_gguf_dir"/*.gguf 2>/dev/null | head -1 &>/dev/null; then
-    ls -lh "$_gguf_dir"/*.gguf 2>/dev/null | awk '{printf "  %-60s  %s\n", $NF, $5}'
-else
-    echo "  (none)"
+echo "  Disk usage: $(du -sh ~/local-llm-models 2>/dev/null | cut -f1 || echo '?')"
+echo ""
+if [[ -f "$_cfg" ]]; then
+    echo "  Active config:"
+    printf "  %-20s  %s\n" "Model"       "$(_r MODEL_NAME)  [$(_r MODEL_SIZE)]"
+    printf "  %-20s  %s\n" "Capabilities" "$(_r MODEL_CAPS)"
+    printf "  %-20s  %s\n" "Ollama tag"  "$(_r OLLAMA_TAG)"
+    printf "  %-20s  GPU:%s / CPU:%s  Threads:%s  Batch:%s\n" \
+        "Layers" "$(_r GPU_LAYERS)" "$(_r MODEL_LAYERS)" "$(_r HW_THREADS)" "$(_r BATCH)"
 fi
-
 echo ""
-echo -e "  ${B}Python venvs:${N}"
-for _v in "$HOME/.local/share/llm-venv" \
-          "$HOME/.local/share/open-webui-venv" \
-          "$HOME/.local/share/open-interpreter-venv" \
-          "$HOME/.local/share/aider-venv"; do
-    [[ -d "$_v" ]] \
-        && echo -e "  ${G}✓${N}  $(basename "$_v")" \
-        || echo -e "  ${M}○${N}  $(basename "$_v") (not installed)"
-done
-echo ""
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/local-models-info"
-ln -sf "${BIN_DIR}/local-models-info" "${BIN_DIR}/llm-status" 2>/dev/null || cp "${BIN_DIR}/local-models-info" "${BIN_DIR}/llm-status"
-chmod +x "${BIN_DIR}/llm-status"
+INFOEOF
+chmod +x "$BIN_DIR/local-models-info"
 
-# ── run-gguf ─────────────────────────────────────────────────────────────────
-cat > "${BIN_DIR}/run-gguf" <<'SCRIPT_EOF'
+# ── llm-show-config ────────────────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/llm-show-config" <<'SHOWCFG'
 #!/usr/bin/env bash
-# Direct llama-cpp-python inference — bypasses Ollama
-# Usage: run-gguf [--model path.gguf] "your prompt"
-VENV_DIR="$HOME/.local/share/llm-venv"
-CONFIG="$HOME/.config/local-llm/selected_model.conf"
+_G='\033[0;32m' _Y='\033[1;33m' _C='\033[0;36m' _N='\033[0m'
+_cfg="$HOME/.config/local-llm/selected_model.conf"
+_r() { grep "^${1}=" "$_cfg" 2>/dev/null | head -1 | cut -d'"' -f2; }
+_sp() {
+    local lbl="$1" path="$2"
+    [[ -e "$path" ]] && printf "  ${_G}✓${_N}  %-26s  %s\n" "$lbl" "$path" \
+                     || printf "  ${_Y}✗${_N}  %-26s  ${_Y}%s  (not found)${_N}\n" "$lbl" "$path"
+}
 
-# Auto-recreate venv if missing (e.g. first boot after setup)
-if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
-    echo "  ⚠  llm-venv missing — rebuilding…"
-    _py=$(command -v python3.12 || command -v python3.11 || command -v python3)
-    [[ -z "$_py" ]] && { echo "ERROR: python3 not found"; exit 1; }
-    "$_py" -m venv "$VENV_DIR" || { echo "ERROR: cannot create venv"; exit 1; }
-    "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel --quiet 2>/dev/null
-    "$VENV_DIR/bin/pip" install llama-cpp-python --quiet 2>/dev/null \
-        || echo "  ⚠  llama-cpp-python install failed — GPU inference won't work"
+echo ""
+echo -e "${_C}╔══════════════════════════════════════════════════════════════════════════════════╗${_N}"
+echo -e "${_C}║               LOCAL LLM  —  PATHS & CONFIG                                     ║${_N}"
+echo -e "${_C}╚══════════════════════════════════════════════════════════════════════════════════╝${_N}"
+echo ""
+echo -e "${_C}  ── Install Paths ────────────────────────────────────────────────────────────────${_N}"
+_sp "Config dir"      "$HOME/.config/local-llm"
+_sp "GGUF models"     "$HOME/local-llm-models/gguf"
+_sp "Ollama models"   "$HOME/local-llm-models/ollama"
+_sp "Neural Terminal" "$HOME/.local/share/llm-webui/llm-chat.html"
+_sp "Open WebUI venv" "$HOME/.local/share/open-webui-venv"
+_sp "Main venv"       "$HOME/.local/share/llm-venv"
+_sp "OI venv"         "$HOME/.local/share/open-interpreter-venv"
+_sp "Aider venv"      "$HOME/.local/share/aider-venv"
+_sp "bin dir"         "$HOME/.local/bin"
+_sp "Alias file"      "$HOME/.local_llm_aliases"
+echo ""
+echo -e "${_C}  ── Model Config ──────────────────────────────────────────────────────────────────${_N}"
+if [[ -f "$_cfg" ]]; then
+    printf "  %-22s  ${_G}%s${_N}\n"  "Model"       "$(_r MODEL_NAME)"
+    printf "  %-22s  %s\n"             "Size tier"   "$(_r MODEL_SIZE)"
+    printf "  %-22s  %s\n"             "Capabilities" "$(_r MODEL_CAPS)"
+    printf "  %-22s  ${_Y}%s${_N}\n"  "Ollama tag"  "$(_r OLLAMA_TAG)"
+    printf "  %-22s  %s / %s total\n" "GPU layers"  "$(_r GPU_LAYERS)" "$(_r MODEL_LAYERS)"
+    printf "  %-22s  %s\n"             "CPU layers"  "$(_r CPU_LAYERS)"
+    printf "  %-22s  %s\n"             "Threads"     "$(_r HW_THREADS)"
+    printf "  %-22s  %s\n"             "Batch"       "$(_r BATCH)"
+    _gguf="$HOME/local-llm-models/gguf/$(_r MODEL_FILENAME)"
+    [[ -f "$_gguf" ]] \
+        && printf "\n  ${_G}✓${_N}  GGUF on disk: %s  (%s)\n" "$_gguf" "$(du -sh "$_gguf" | cut -f1)" \
+        || printf "\n  ${_Y}✗${_N}  GGUF not downloaded: %s\n" "$_gguf"
+else
+    echo "  (no config — run: llm-setup)"
 fi
+echo ""
+echo -e "${_C}  ── Services ──────────────────────────────────────────────────────────────────────${_N}"
+curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 \
+    && echo -e "  ${_G}✓${_N}  Ollama  running @ http://127.0.0.1:11434" \
+    || echo -e "  ${_Y}✗${_N}  Ollama  not running  (run: ollama-start)"
+curl -sf --max-time 2 http://127.0.0.1:8080 >/dev/null 2>&1 \
+    && echo -e "  ${_G}✓${_N}  Open WebUI  running @ http://localhost:8080" \
+    || echo -e "  ${_Y}–${_N}  Open WebUI  not running  (run: webui)"
+curl -sf --max-time 2 http://127.0.0.1:8090 >/dev/null 2>&1 \
+    && echo -e "  ${_G}✓${_N}  Neural Terminal  running @ http://localhost:8090" \
+    || echo -e "  ${_Y}–${_N}  Neural Terminal  not running  (run: chat)"
+echo ""
+SHOWCFG
+chmod +x "$BIN_DIR/llm-show-config"
 
-if ! "$VENV_DIR/bin/python3" -c "from llama_cpp import Llama" 2>/dev/null; then
-    echo "  ⚠  llama-cpp-python not installed in venv."
-    echo "  To fix: re-run llm-auto-setup.sh (it will rebuild llama-cpp-python)."
-    exit 1
+# ── llm-checker ─────────────────────────────────────────────────────────────────────────────────
+cat > "$BIN_DIR/llm-checker" <<'CHECKER'
+#!/usr/bin/env bash
+# llm-checker — hardware + model status dashboard
+[[ -t 1 ]] && { G='\033[0;32m' Y='\033[1;33m' C='\033[0;36m' R='\033[0;31m' N='\033[0m'; } \
+            || { G=''; Y=''; C=''; R=''; N=''; }
+
+VRAM=0; GPU_NAME="None"
+command -v nvidia-smi &>/dev/null && {
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "NVIDIA")
+    VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null \
+           | head -1 | awk '{print int($1/1024)}')
+}
+RAM=$(awk '/MemTotal/{print int($2/1024/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+THREADS=$(nproc 2>/dev/null || echo 4)
+
+CFG="$HOME/.config/local-llm/selected_model.conf"
+MODEL=$(grep "^MODEL_NAME=" "$CFG" 2>/dev/null | cut -d'"' -f2 || echo "(none)")
+TAG=$(  grep "^OLLAMA_TAG=" "$CFG" 2>/dev/null | cut -d'"' -f2 || echo "(none)")
+CAPS=$( grep "^MODEL_CAPS=" "$CFG" 2>/dev/null | cut -d'"' -f2 || echo "")
+
+echo ""
+echo -e "${C}╔══════════════════════════════════════════════════════════════════════════════════╗${N}"
+echo -e "${C}║          🔍  LLM CHECKER  —  System & Model Status                               ║${N}"
+echo -e "${C}╚══════════════════════════════════════════════════════════════════════════════════╝${N}"
+echo ""
+echo -e "${C}  Hardware${N}"
+printf "  %-18s %s\n" "CPU threads"  "$THREADS"
+printf "  %-18s %s\n" "RAM"          "${RAM} GB"
+printf "  %-18s %s\n" "GPU"          "$GPU_NAME"
+(( VRAM > 0 )) && printf "  %-18s %s\n" "VRAM" "${VRAM} GB"
+echo ""
+echo -e "${C}  Ollama${N}"
+if command -v ollama &>/dev/null; then
+    OV=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
+    printf "  %-18s ${G}%s${N}\n" "Version" "$OV"
+    [[ "$OV" != "0.12.3" ]] && printf "  ${Y}⚠  Expected 0.12.3 — wrong version may break RTX 30xx GPU!${N}\n"
+    curl -s --max-time 2 http://localhost:11434/api/tags &>/dev/null \
+        && printf "  %-18s ${G}%s${N}\n" "Status" "running ✓" \
+        || printf "  %-18s ${R}%s${N}\n" "Status" "not running  →  ollama-start"
+else
+    printf "  ${R}Ollama not installed — run: llm-setup${N}\n"
 fi
+echo ""
+echo -e "${C}  Active model${N}"
+printf "  %-18s %s\n" "Name"         "$MODEL"
+printf "  %-18s %s\n" "Ollama tag"   "$TAG"
+printf "  %-18s %s\n" "Capabilities" "${CAPS:-unknown}"
+echo ""
+echo -e "${C}  Tool integration${N}"
+printf "  %-18s %s\n" "API endpoint" "http://127.0.0.1:11434/v1  (OpenAI-compatible)"
+printf "  %-18s %s\n" "cowork"       "OI → openai/\$OLLAMA_TAG via Ollama /v1"
+printf "  %-18s %s\n" "aider"        "ollama_chat/\$OLLAMA_TAG"
+printf "  %-18s %s\n" "Open WebUI"   "OLLAMA_BASE_URL=http://127.0.0.1:11434"
+echo ""
+echo -e "${C}  Recommended models by VRAM${N}"
+(( VRAM >= 24 )) && M_REC="Qwen3-32B Q4_K_M (24 GB+)"  \
+    || (( VRAM >= 12 )) && M_REC="Qwen3-14B Q4_K_M" \
+    || (( VRAM >= 8  )) && M_REC="Qwen3-8B Q6_K"    \
+    || (( VRAM >= 6  )) && M_REC="Qwen3-8B Q4_K_M"  \
+    || (( RAM  >= 16 )) && M_REC="Qwen3-8B Q4_K_M (CPU)" \
+    || M_REC="Qwen3-4B Q4_K_M (CPU)"
+printf "  %-18s ${G}%s${N}\n" "Best fit" "$M_REC"
+echo ""
+CHECKER
+chmod +x "$BIN_DIR/llm-checker"
 
-_model=""
-_prompt=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --model) _model="$2"; shift 2 ;;
-        *) _prompt="${_prompt} $1"; shift ;;
-    esac
-done
+# =============================================================================
+# STEP 13 — OPEN WEBUI
+# =============================================================================
+step "Open WebUI (primary UI — port 8080)"
 
-if [[ -z "$_model" ]] && [[ -f "$CONFIG" ]]; then
-    _file=$(grep ^MODEL_FILE= "$CONFIG" | cut -d'"' -f2)
-    _dir=$(grep ^GGUF_MODELS= "$CONFIG" | cut -d'"' -f2)
-    _model="${_dir:-$HOME/local-llm-models/gguf}/${_file}"
-fi
-
-[[ -z "$_model" || ! -f "$_model" ]] && { echo "No model found. Use --model /path/to/model.gguf"; exit 1; }
-[[ -z "$_prompt" ]] && { printf "Prompt: "; read -r _prompt; }
-
-source "$VENV_DIR/bin/activate"
-python3 - "$_model" "${_prompt}" <<'PYEOF'
-import sys
-from llama_cpp import Llama
-model_path, prompt = sys.argv[1], " ".join(sys.argv[2:])
-llm = Llama(model_path=model_path, n_ctx=4096, verbose=False)
-output = llm(prompt, max_tokens=512, stop=["</s>", "<|im_end|>"], echo=False)
-print(output["choices"][0]["text"].strip())
-PYEOF
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/run-gguf"
-
-info "Helper scripts installed."
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 13 — WEB UI
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Web UI (Open WebUI + Neural Terminal)"
-
-# ── 13a. Open WebUI ───────────────────────────────────────────────────────────
-OWUI_DATA="$GUI_DIR/open-webui-data"
-mkdir -p "$OWUI_DATA"
-
+info "Setting up Open WebUI venv…"
 _ensure_venv "$OWUI_VENV"
+"$OWUI_VENV/bin/pip" install --upgrade pip --quiet >> "$LOG_FILE" 2>&1 || true
 
-spin_start "Installing / upgrading Open WebUI (may take a few minutes)…"
-"$OWUI_VENV/bin/pip" install open-webui --quiet 2>/dev/null \
-    && info "Open WebUI installed: $("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | grep ^Version | awk '{print $2}' || echo 'ok')" \
-    || warn "Open WebUI install had warnings — run llm-webui to check"
-spin_stop $?
+if is_wsl2; then _OWUI_HOST="0.0.0.0"; else _OWUI_HOST="127.0.0.1"; fi
+mkdir -p "$GUI_DIR/open-webui-data"
 
-# Launcher — checks venv and auto-recreates if missing
-cat > "${BIN_DIR}/llm-webui" <<'SCRIPT_EOF'
+if "$OWUI_VENV/bin/pip" show open-webui &>/dev/null 2>&1; then
+    _old=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}')
+    info "Open WebUI $_old already installed — upgrading…"
+    _pip_with_ticker "Upgrading open-webui" \
+        "$OWUI_VENV/bin/pip" install --upgrade open-webui || warn "Open WebUI upgrade failed."
+else
+    info "Installing Open WebUI (first install — may take 5–10 min)…"
+    _pip_with_ticker "Installing open-webui (5-10 min)" \
+        "$OWUI_VENV/bin/pip" install open-webui \
+        || warn "Open WebUI install failed — check $LOG_FILE"
+fi
+
+_owui_ver=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | awk '/^Version:/{print $2}' || echo "?")
+[[ "$_owui_ver" != "?" ]] && info "Open WebUI $_owui_ver ✓" || warn "Open WebUI may not have installed correctly."
+unset _owui_ver _old
+
+# Launcher
+cat > "$BIN_DIR/llm-webui" <<OWUI_L
 #!/usr/bin/env bash
-OWUI_VENV="$HOME/.local/share/open-webui-venv"
-OWUI_DATA="$HOME/.local/share/llm-webui/open-webui-data"
-BIN_DIR="$HOME/.local/bin"
+# llm-webui / webui — Open WebUI (primary chat interface)
+set -uo pipefail
+OWUI_VENV="\$HOME/.local/share/open-webui-venv"
+OWUI_DATA="\$HOME/.local/share/llm-webui/open-webui-data"
+BIN_DIR="\$HOME/.local/bin"
 
-# Auto-recreate venv if missing
-if [[ ! -x "$OWUI_VENV/bin/python3" ]]; then
-    echo "  ⚠  open-webui-venv missing — rebuilding…"
-    _py=$(command -v python3.12 || command -v python3.11 || command -v python3)
-    [[ -z "$_py" ]] && { echo "ERROR: python3 not found"; exit 1; }
-    "$_py" -m venv "$OWUI_VENV" || { echo "ERROR: cannot create venv"; exit 1; }
-    "$OWUI_VENV/bin/pip" install --upgrade pip setuptools wheel --quiet 2>/dev/null
-    "$OWUI_VENV/bin/pip" install open-webui --quiet \
-        || { echo "ERROR: open-webui install failed"; exit 1; }
+# Auto-reinstall if missing
+if [[ ! -x "\$OWUI_VENV/bin/open-webui" ]]; then
+    echo "  Open WebUI not found — reinstalling (may take 5 min)…"
+    "\${PYTHON_BIN:-python3}" -m venv "\$OWUI_VENV" 2>/dev/null || python3 -m venv "\$OWUI_VENV"
+    "\$OWUI_VENV/bin/pip" install --quiet --upgrade pip open-webui \
+        || { echo "  ERROR: reinstall failed. Run: llm-setup"; exit 1; }
+    echo "  ✓ Reinstalled."
 fi
 
-if ! "$OWUI_VENV/bin/python3" -c "import open_webui" 2>/dev/null \
-   && ! "$OWUI_VENV/bin/which" open-webui >/dev/null 2>/dev/null; then
-    echo "  ⚠  open-webui not found in venv. Installing…"
-    "$OWUI_VENV/bin/pip" install open-webui --quiet \
-        || { echo "ERROR: open-webui install failed"; exit 1; }
+# Start Ollama if needed
+_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+if ! _up; then
+    echo "→ Starting Ollama…"
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+        [[ -x "\$BIN_DIR/ollama-start" ]] && "\$BIN_DIR/ollama-start" \
+            || nohup ollama serve >"\$HOME/.ollama.log" 2>&1 &
+    else
+        sudo systemctl start ollama 2>/dev/null || nohup ollama serve >"\$HOME/.ollama.log" 2>&1 &
+    fi
+    for _i in {1..20}; do _up && break; sleep 1; done
+    _up || echo "  WARNING: Ollama not responding — WebUI may show no models."
 fi
 
-_ollama_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
-if ! _ollama_up; then
-    [[ -x "$BIN_DIR/ollama-start" ]] && "$BIN_DIR/ollama-start" \
-        || nohup ollama serve >/dev/null 2>&1 &
-    for i in {1..20}; do _ollama_up && break; sleep 1; done
-fi
+# Kill stale process on port 8080
+_st=\$(ss -lptn 'sport = :8080' 2>/dev/null \
+    | awk 'NR>1{match(\$NF,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1 || \
+    fuser 8080/tcp 2>/dev/null || true)
+[[ -n "\$_st" ]] && { kill "\$_st" 2>/dev/null || true; sleep 1; }
+mkdir -p "\$OWUI_DATA"
 
-_stale=$(ss -lptn 'sport = :8080' 2>/dev/null \
-    | awk 'NR>1{match($NF,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1 || true)
-[[ -n "$_stale" ]] && { kill "$_stale" 2>/dev/null; sleep 1; }
-
-mkdir -p "$OWUI_DATA"
-
+# Environment — tool calling + Ollama integration
 export OLLAMA_BASE_URL="http://127.0.0.1:11434"
 export OLLAMA_API_BASE_URL="http://127.0.0.1:11434"
 export ENABLE_OLLAMA_API="true"
+export ENABLE_TOOLS="true"
+export ENABLE_CODE_EXECUTION="true"
 export WEBUI_AUTH="false"
 export ENABLE_LOGIN_FORM="false"
 export ENABLE_SIGNUP="false"
@@ -1721,825 +1951,895 @@ export CORS_ALLOW_ORIGIN="*"
 export AIOHTTP_CLIENT_TIMEOUT=900
 export AIOHTTP_CLIENT_TIMEOUT_TOTAL=900
 export OLLAMA_REQUEST_TIMEOUT=900
-export OLLAMA_CLIENT_TIMEOUT=900
 export OLLAMA_NUM_PARALLEL=1
 export OLLAMA_MAX_LOADED_MODELS=1
 export OLLAMA_FLASH_ATTENTION=1
-export DATA_DIR="$OWUI_DATA"
+export DATA_DIR="\$OWUI_DATA"
 export PYTHONWARNINGS="ignore::RuntimeWarning"
 
-echo "  Starting Open WebUI at http://localhost:8080 …"
-source "$OWUI_VENV/bin/activate"
-exec open-webui serve --host 0.0.0.0 --port 8080
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-webui"
+echo ""
+echo "  ╔══════════════════════════════════════════════════════════════════════╗"
+echo "  ║        🌐  OPEN WEBUI  —  LOCAL LLM                                  ║"
+echo "  ║  URL:  http://localhost:8080                                         ║"
+echo "  ║  Ollama API: http://127.0.0.1:11434                                  ║"
+echo "  ║  Tools / function calling: enabled                                   ║"
+echo "  ║  Press Ctrl+C to stop                                                ║"
+echo "  ╚══════════════════════════════════════════════════════════════════════╝"
+echo ""
 
-# ── 13b. Neural Terminal HTML ─────────────────────────────────────────────────
-mkdir -p "$GUI_DIR"
-cat > "$GUI_DIR/index.html" <<'HTML_EOF'
-<!DOCTYPE html>
+exec "\$OWUI_VENV/bin/open-webui" serve --host ${_OWUI_HOST} --port 8080
+OWUI_L
+chmod +x "$BIN_DIR/llm-webui"
+# 'webui' should be a direct copy / symlink
+cp "$BIN_DIR/llm-webui" "$BIN_DIR/webui" 2>/dev/null || ln -sf "$BIN_DIR/llm-webui" "$BIN_DIR/webui" || true
+chmod +x "$BIN_DIR/webui" 2>/dev/null || true
+info "Open WebUI launcher: llm-webui / webui → http://localhost:8080"
+
+# =============================================================================
+# STEP 14 — NEURAL TERMINAL (HTML fallback UI)
+# =============================================================================
+step "Neural Terminal (fallback UI — port 8090)"
+
+python3 - <<'PYHTML'
+import os
+html = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Neural Terminal</title>
+<title>NEURAL TERMINAL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
-    --accent: #58a6ff; --accent2: #3fb950; --warn: #f78166;
-    --text: #e6edf3; --muted: #8b949e; --border: #30363d;
-    --code-bg: #1c2128;
-  }
-  body { background: var(--bg); color: var(--text); font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
-  header h1 { font-size: 16px; color: var(--accent); font-weight: 600; letter-spacing: 1px; }
-  header h1 span { color: var(--muted); }
-  select { background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-family: inherit; font-size: 13px; cursor: pointer; outline: none; }
-  select:focus { border-color: var(--accent); }
-  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; transition: background 0.3s; }
-  #status-dot.online { background: var(--accent2); }
-  #status-dot.error { background: var(--warn); }
-  #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
-  #messages::-webkit-scrollbar { width: 6px; } #messages::-webkit-scrollbar-track { background: transparent; } #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  .msg { display: flex; flex-direction: column; gap: 4px; max-width: 85%; }
-  .msg.user { align-self: flex-end; }
-  .msg.assistant { align-self: flex-start; }
-  .msg-role { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-  .msg.user .msg-role { color: var(--accent); text-align: right; }
-  .msg-content { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-  .msg.user .msg-content { background: var(--bg3); border-color: var(--accent); }
-  .msg.assistant .msg-content { border-color: var(--border); }
-  .msg-content code { background: var(--code-bg); border-radius: 3px; padding: 1px 5px; font-size: 13px; color: #79c0ff; }
-  .msg-content pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px; overflow-x: auto; margin: 8px 0; }
-  .msg-content pre code { background: none; padding: 0; color: var(--text); }
-  .msg.thinking .msg-content { color: var(--muted); font-style: italic; border-style: dashed; }
-  footer { background: var(--bg2); border-top: 1px solid var(--border); padding: 14px 20px; display: flex; gap: 10px; flex-shrink: 0; }
-  #input { flex: 1; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-family: inherit; font-size: 14px; resize: none; outline: none; max-height: 180px; min-height: 42px; transition: border-color 0.2s; }
-  #input:focus { border-color: var(--accent); }
-  #input::placeholder { color: var(--muted); }
-  button { background: var(--accent); color: var(--bg); border: none; border-radius: 8px; padding: 10px 18px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; flex-shrink: 0; }
-  button:hover { opacity: 0.85; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  #clear-btn { background: var(--bg3); color: var(--muted); border: 1px solid var(--border); }
-  .typing { display: flex; align-items: center; gap: 6px; padding: 10px 16px; }
-  .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: bounce 1s infinite; }
-  .typing span:nth-child(2) { animation-delay: 0.15s; }
-  .typing span:nth-child(3) { animation-delay: 0.3s; }
-  @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-8px)} }
-  .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); gap: 12px; }
-  .empty-state h2 { color: var(--text); font-size: 20px; }
-  .empty-state p { font-size: 13px; }
+:root{--bg:#0a0e1a;--bg2:#0f1525;--bg3:#141b2d;--border:#1e2d4a;--accent:#00d4ff;--accent2:#00ff88;--accent3:#7b2fff;--text:#c8d8f0;--text2:#7a9cc0;--user-bg:#0d1f35;--ai-bg:#081520;--code-bg:#050c18;--danger:#ff4466;--warn:#ffaa00;}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;font-family:'JetBrains Mono',monospace;background:var(--bg);color:var(--text);overflow:hidden;}
+#app{display:flex;height:100vh;}
+#sidebar{width:260px;min-width:200px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;transition:width .2s;}
+#sidebar.collapsed{width:48px;min-width:48px;}
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+#sidebar-header{padding:14px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+#logo{font-family:'Orbitron',monospace;font-weight:900;font-size:13px;color:var(--accent);letter-spacing:2px;white-space:nowrap;overflow:hidden;}
+#toggle-sidebar{background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;padding:2px 4px;flex-shrink:0;}
+#toggle-sidebar:hover{color:var(--accent);}
+#new-chat-btn{margin:10px;padding:9px;background:linear-gradient(135deg,var(--accent3),var(--accent));border:none;border-radius:8px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;}
+#new-chat-btn:hover{opacity:.85;}
+#sessions-list{flex:1;overflow-y:auto;padding:6px 0;}
+.session-item{padding:9px 14px;cursor:pointer;border-left:3px solid transparent;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:all .15s;}
+.session-item:hover{background:var(--bg3);color:var(--text);}
+.session-item.active{border-left-color:var(--accent);background:var(--bg3);color:var(--accent);}
+#topbar{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg2);display:flex;align-items:center;gap:10px;}
+#model-select{flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;}
+#model-select:focus{outline:1px solid var(--accent);}
+#status-dot{width:8px;height:8px;border-radius:50%;background:var(--danger);flex-shrink:0;}
+#status-dot.online{background:var(--accent2);}
+#status-text{font-size:11px;color:var(--text2);white-space:nowrap;}
+#export-btn{background:none;border:1px solid var(--border);color:var(--text2);padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer;white-space:nowrap;}
+#export-btn:hover{border-color:var(--accent);color:var(--accent);}
+#messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px;}
+#messages::-webkit-scrollbar{width:4px;}
+#messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.msg{display:flex;gap:12px;max-width:820px;}
+.msg.user{align-self:flex-end;flex-direction:row-reverse;max-width:75%;}
+.msg.assistant{align-self:flex-start;}
+.avatar{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+.msg.user .avatar{background:linear-gradient(135deg,var(--accent3),var(--accent));color:#fff;}
+.msg.assistant .avatar{background:linear-gradient(135deg,var(--accent2)33,var(--bg3));border:1px solid var(--accent2)44;color:var(--accent2);}
+.bubble{padding:12px 16px;border-radius:10px;font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word;}
+.msg.user .bubble{background:var(--user-bg);border:1px solid var(--border);}
+.msg.assistant .bubble{background:var(--ai-bg);border:1px solid var(--border);}
+.bubble code{font-family:'JetBrains Mono',monospace;font-size:12px;}
+.bubble pre{background:var(--code-bg)!important;border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;margin:8px 0;}
+.bubble pre code{background:transparent!important;padding:0;font-size:12px;}
+.thinking-block{background:var(--bg3);border:1px solid var(--accent3)44;border-radius:8px;padding:10px 14px;margin:4px 0;font-size:12px;color:var(--text2);font-style:italic;}
+.thinking-block summary{cursor:pointer;color:var(--accent3);font-weight:600;}
+#empty-state{text-align:center;margin:auto;padding:40px 20px;}
+.empty-logo{font-family:'Orbitron',monospace;font-size:36px;font-weight:900;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:6px;}
+.empty-sub{color:var(--text2);font-size:12px;margin:8px 0 30px;letter-spacing:2px;}
+.suggestion-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:520px;margin:0 auto;}
+.suggestion{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:11px;color:var(--text2);cursor:pointer;text-align:left;transition:all .15s;}
+.suggestion:hover{border-color:var(--accent);color:var(--text);background:var(--bg2);}
+#input-area{padding:14px 16px;border-top:1px solid var(--border);background:var(--bg2);}
+#input-row{display:flex;gap:10px;align-items:flex-end;}
+#prompt{flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:13px;resize:none;min-height:44px;max-height:160px;line-height:1.5;}
+#prompt:focus{outline:1px solid var(--accent);}
+#prompt::placeholder{color:var(--text2);}
+#send-btn{background:linear-gradient(135deg,var(--accent3),var(--accent));border:none;color:#fff;width:44px;height:44px;border-radius:8px;cursor:pointer;font-size:18px;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+#send-btn:disabled{opacity:.4;cursor:not-allowed;}
+#send-btn:not(:disabled):hover{opacity:.85;}
+#input-hint{font-size:10px;color:var(--text2);margin-top:6px;text-align:center;}
+.typing-indicator{display:flex;gap:5px;align-items:center;padding:8px 0;}
+.typing-indicator span{width:7px;height:7px;border-radius:50%;background:var(--accent2);animation:bounce .9s infinite;}
+.typing-indicator span:nth-child(2){animation-delay:.15s;}
+.typing-indicator span:nth-child(3){animation-delay:.3s;}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);}30%{transform:translateY(-6px);}}
+#sys-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
+#sys-toggle{background:none;border:1px solid var(--border);color:var(--text2);padding:4px 10px;border-radius:5px;font-size:10px;cursor:pointer;}
+#sys-toggle:hover{border-color:var(--accent3);color:var(--accent3);}
+#sys-prompt{display:none;width:100%;background:var(--bg3);border:1px solid var(--accent3)44;color:var(--text2);padding:8px 12px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:11px;resize:vertical;min-height:56px;margin-bottom:8px;}
+#sys-prompt.open{display:block;}
 </style>
 </head>
 <body>
-<header>
-  <div id="status-dot"></div>
-  <h1>NEURAL <span>TERMINAL</span></h1>
-  <select id="model-select"><option value="">Loading models…</option></select>
-  <button id="clear-btn" onclick="clearChat()">Clear</button>
-</header>
-<div id="messages">
-  <div class="empty-state">
-    <h2>⚡ Neural Terminal</h2>
-    <p>Local LLM inference via Ollama · Streaming responses</p>
-    <p id="empty-hint" style="color:var(--muted);font-size:12px;">Connecting to Ollama on port 11434…</p>
+<div id="app">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <button id="toggle-sidebar" title="Toggle sidebar">☰</button>
+      <div id="logo">N T</div>
+    </div>
+    <button id="new-chat-btn">＋ New chat</button>
+    <div id="sessions-list"></div>
+  </div>
+  <div id="main">
+    <div id="topbar">
+      <select id="model-select"><option value="">Loading models…</option></select>
+      <div id="status-dot"></div>
+      <div id="status-text">checking…</div>
+      <button id="export-btn">⬇ export</button>
+    </div>
+    <div id="messages"></div>
+    <div id="input-area">
+      <div id="sys-row"><button id="sys-toggle">⚙ system prompt</button></div>
+      <textarea id="sys-prompt" placeholder="System prompt (optional)…"></textarea>
+      <div id="input-row">
+        <textarea id="prompt" rows="1" placeholder="Message… (Shift+Enter=newline, /think=reasoning)"></textarea>
+        <button id="send-btn">▶</button>
+      </div>
+      <div id="input-hint">Enter = send · Shift+Enter = newline · /think = reasoning mode</div>
+    </div>
   </div>
 </div>
-<footer>
-  <textarea id="input" placeholder="Type a message… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
-  <button id="send-btn" onclick="sendMessage()">Send ▶</button>
-</footer>
 <script>
-const OLLAMA = 'http://localhost:11434';
-let messages = [];
-let streaming = false;
-
-const dot = document.getElementById('status-dot');
-const modelSel = document.getElementById('model-select');
-const input = document.getElementById('input');
-const msgDiv = document.getElementById('messages');
-const sendBtn = document.getElementById('send-btn');
-
-async function loadModels() {
-  try {
-    const r = await fetch(OLLAMA + '/api/tags', {signal: AbortSignal.timeout(4000)});
-    const d = await r.json();
-    const models = d.models || [];
-    modelSel.innerHTML = models.length
-      ? models.map(m => `<option value="${m.name}">${m.name}</option>`).join('')
-      : '<option value="">No models found</option>';
-    dot.className = 'online';
-    document.getElementById('empty-hint').textContent = models.length
-      ? `${models.length} model(s) available. Start chatting!`
-      : 'No Ollama models found. Run: ollama pull qwen3:8b';
-  } catch(e) {
-    dot.className = 'error';
-    modelSel.innerHTML = '<option value="">Ollama offline</option>';
-    document.getElementById('empty-hint').textContent = 'Ollama not running. Run: ollama-start';
-  }
+const API='http://localhost:11434';
+let sessions=JSON.parse(localStorage.getItem('nt_sessions')||'[]');
+let activeId=localStorage.getItem('nt_active')||null;
+let isStreaming=false;
+function save(){localStorage.setItem('nt_sessions',JSON.stringify(sessions));localStorage.setItem('nt_active',activeId||'');}
+function newSession(){const id='sess_'+Date.now();sessions.unshift({id,name:'New chat',history:[]});activeId=id;save();renderSidebar();renderMessages();}
+function getActive(){return sessions.find(s=>s.id===activeId)||sessions[0];}
+if(!sessions.length)newSession();
+if(!activeId||!sessions.find(s=>s.id===activeId))activeId=sessions[0].id;
+const dot=document.getElementById('status-dot');
+const stxt=document.getElementById('status-text');
+const sel=document.getElementById('model-select');
+async function checkOllama(){
+  try{
+    const r=await fetch(`${API}/api/tags`,{signal:AbortSignal.timeout(3000)});
+    if(!r.ok)throw new Error();
+    const d=await r.json();
+    dot.className='online';stxt.textContent='Ollama online';
+    const models=(d.models||[]).map(m=>m.name);
+    const prev=sel.value;
+    sel.innerHTML=models.length?models.map(m=>`<option value="${m}">${m}</option>`).join(''):'<option value="">No models — run: ollama pull qwen3:8b</option>';
+    const saved=localStorage.getItem('nt_model');
+    if(prev&&models.includes(prev))sel.value=prev;
+    else if(saved&&models.includes(saved))sel.value=saved;
+    else if(models.length)sel.value=models[0];
+  }catch{dot.className='';stxt.textContent='Ollama offline';sel.innerHTML='<option value="">Ollama offline — run: ollama-start</option>';}
 }
-
-function escapeHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-function renderContent(text) {
-  // Code blocks
-  text = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (_,lang,code) =>
-    `<pre><code>${escapeHtml(code.trim())}</code></pre>`);
-  // Inline code
-  text = text.replace(/`([^`]+)`/g, (_,c) => `<code>${escapeHtml(c)}</code>`);
-  // Bold
-  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+sel.addEventListener('change',()=>localStorage.setItem('nt_model',sel.value));
+checkOllama();setInterval(checkOllama,8000);
+function escHtml(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function renderMarkdown(text){
+  text=text.replace(/<think>([\s\S]*?)<\/think>/gi,(_,t)=>`<details class="thinking-block"><summary>💭 Reasoning</summary><pre style="white-space:pre-wrap;margin:8px 0 0">${escHtml(t.trim())}</pre></details>`);
+  text=text.replace(/```(\w*)\n?([\s\S]*?)```/g,(_,lang,code)=>{
+    const e=escHtml(code.trim());
+    const h=lang?(()=>{try{return hljs.highlight(e,{language:lang,ignoreIllegals:true}).value;}catch{return e;}})():hljs.highlightAuto(e).value;
+    return `<pre><code class="hljs">${h}</code></pre>`;
+  });
+  text=text.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+  text=text.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  text=text.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+  text=text.replace(/^### (.+)$/gm,'<strong style="color:var(--accent)">$1</strong>');
+  text=text.replace(/^## (.+)$/gm,'<strong style="font-size:1.05em;color:var(--accent2)">$1</strong>');
+  text=text.replace(/^# (.+)$/gm,'<strong style="font-size:1.1em;color:var(--accent)">$1</strong>');
   return text;
 }
-
-function addMessage(role, content, isStreaming) {
-  const empty = document.querySelector('.empty-state');
-  if (empty) empty.remove();
-
-  const div = document.createElement('div');
-  div.className = `msg ${role}`;
-  const label = role === 'user' ? 'You' : 'Assistant';
-  div.innerHTML = `<div class="msg-role">${label}</div>
-    <div class="msg-content">${isStreaming ? '' : renderContent(content)}</div>`;
-  if (isStreaming) {
-    div.querySelector('.msg-content').innerHTML =
-      '<div class="typing"><span></span><span></span><span></span></div>';
+function appendMsg(role,content,streaming=false){
+  const msgs=document.getElementById('messages');
+  if(streaming){
+    let el=document.getElementById('streaming-msg');
+    if(!el){
+      el=document.createElement('div');
+      el.className=`msg ${role}`;
+      el.id='streaming-msg';
+      el.innerHTML=`<div class="avatar">${role==='user'?'👤':'🤖'}</div><div class="bubble"></div>`;
+      msgs.appendChild(el);
+    }
+    el.querySelector('.bubble').innerHTML=renderMarkdown(content);
+    msgs.scrollTop=msgs.scrollHeight;return;
   }
-  msgDiv.appendChild(div);
-  msgDiv.scrollTop = msgDiv.scrollHeight;
-  return div;
+  const el=document.createElement('div');
+  el.className=`msg ${role}`;
+  el.innerHTML=`<div class="avatar">${role==='user'?'👤':'🤖'}</div><div class="bubble">${renderMarkdown(content)}</div>`;
+  msgs.appendChild(el);msgs.scrollTop=msgs.scrollHeight;
 }
-
-async function sendMessage() {
-  if (streaming) return;
-  const text = input.value.trim();
-  if (!text) return;
-  const model = modelSel.value;
-  if (!model) { alert('Select a model first.'); return; }
-
-  messages.push({role: 'user', content: text});
-  addMessage('user', text, false);
-  input.value = '';
-  input.style.height = 'auto';
-
-  streaming = true;
-  sendBtn.disabled = true;
-  const aMsg = addMessage('assistant', '', true);
-  const aContent = aMsg.querySelector('.msg-content');
-  let fullText = '';
-
-  try {
-    const resp = await fetch(OLLAMA + '/api/chat', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        model, stream: true,
-        messages: messages.map(m => ({role: m.role, content: m.content}))
-      })
-    });
-
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      const chunk = dec.decode(value, {stream: true});
-      for (const line of chunk.split('\n').filter(Boolean)) {
-        try {
-          const j = JSON.parse(line);
-          if (j.message?.content) {
-            fullText += j.message.content;
-            aContent.innerHTML = renderContent(fullText);
-            msgDiv.scrollTop = msgDiv.scrollHeight;
-          }
-        } catch {}
+function renderSidebar(){
+  const list=document.getElementById('sessions-list');
+  list.innerHTML=sessions.map(s=>`<div class="session-item${s.id===activeId?' active'}" data-id="${s.id}">${escHtml(s.name)}</div>`).join('');
+  list.querySelectorAll('.session-item').forEach(el=>{
+    el.addEventListener('click',()=>{activeId=el.dataset.id;save();renderSidebar();renderMessages();});
+  });
+}
+document.getElementById('toggle-sidebar').addEventListener('click',()=>document.getElementById('sidebar').classList.toggle('collapsed'));
+document.getElementById('new-chat-btn').addEventListener('click',newSession);
+document.getElementById('sys-toggle').addEventListener('click',()=>document.getElementById('sys-prompt').classList.toggle('open'));
+function renderMessages(){
+  const msgs=document.getElementById('messages');
+  const sess=getActive();
+  if(!sess||!sess.history.filter(m=>m.role!=='system').length){
+    msgs.innerHTML=`<div id="empty-state"><div class="empty-logo">N T</div><div class="empty-sub">Neural Terminal · Local LLM</div><div class="suggestion-grid"><div class="suggestion" onclick="useSuggestion(this)">Explain how transformers work</div><div class="suggestion" onclick="useSuggestion(this)">Write a Python script to batch rename files</div><div class="suggestion" onclick="useSuggestion(this)">/think What is the best sorting algorithm?</div><div class="suggestion" onclick="useSuggestion(this)">Debug this code:</div></div></div>`;
+    return;
+  }
+  msgs.innerHTML='';
+  sess.history.forEach(m=>{if(m.role==='system')return;appendMsg(m.role,m.content,false);});
+}
+function useSuggestion(el){document.getElementById('prompt').value=el.textContent;sendMessage();}
+const promptEl=document.getElementById('prompt');
+const sendBtn=document.getElementById('send-btn');
+promptEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}});
+promptEl.addEventListener('input',()=>{promptEl.style.height='auto';promptEl.style.height=Math.min(promptEl.scrollHeight,160)+'px';});
+sendBtn.addEventListener('click',sendMessage);
+async function sendMessage(){
+  const text=promptEl.value.trim();
+  if(!text||isStreaming)return;
+  const model=sel.value;
+  if(!model){alert('No model selected. Start Ollama: ollama-start');return;}
+  const sess=getActive();
+  const es=document.getElementById('empty-state');if(es)es.remove();
+  const sysText=document.getElementById('sys-prompt').value.trim();
+  if(sysText&&!sess.history.find(m=>m.role==='system'))sess.history.unshift({role:'system',content:sysText});
+  let userContent=text,thinkMode=false;
+  if(text.startsWith('/think ')){userContent=text.slice(7);thinkMode=true;}
+  sess.history.push({role:'user',content:userContent});
+  if(sess.name==='New chat')sess.name=userContent.slice(0,36)+(userContent.length>36?'…':'');
+  save();renderSidebar();appendMsg('user',userContent);
+  promptEl.value='';promptEl.style.height='auto';
+  const msgs=document.getElementById('messages');
+  const typingEl=document.createElement('div');
+  typingEl.className='msg assistant';typingEl.id='typing-indicator';
+  typingEl.innerHTML='<div class="avatar">🤖</div><div class="bubble"><div class="typing-indicator"><span></span><span></span><span></span></div></div>';
+  msgs.appendChild(typingEl);msgs.scrollTop=msgs.scrollHeight;
+  isStreaming=true;sendBtn.disabled=true;
+  try{
+    const apiMessages=[...sess.history];
+    if(thinkMode){apiMessages[apiMessages.length-1]={role:'user',content:'/think '+userContent};}
+    const resp=await fetch(`${API}/api/chat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model,messages:apiMessages,stream:true,options:{temperature:0.7,top_p:0.95}})});
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    typingEl.remove();
+    let full='';
+    const reader=resp.body.getReader();
+    const dec=new TextDecoder();
+    while(true){
+      const{done,value}=await reader.read();if(done)break;
+      for(const line of dec.decode(value).split('\n')){
+        if(!line.trim())continue;
+        try{const chunk=JSON.parse(line);if(chunk.message?.content){full+=chunk.message.content;appendMsg('assistant',full,true);}if(chunk.done)break;}catch{}
       }
     }
-    messages.push({role: 'assistant', content: fullText});
-  } catch(e) {
-    aContent.innerHTML = `<span style="color:var(--warn)">Error: ${e.message}</span>`;
-  } finally {
-    streaming = false;
-    sendBtn.disabled = false;
-  }
+    const streamEl=document.getElementById('streaming-msg');if(streamEl)streamEl.removeAttribute('id');
+    sess.history.push({role:'assistant',content:full});save();
+  }catch(err){
+    typingEl.remove();appendMsg('assistant',`⚠ Error: ${err.message}\n\nIs Ollama running? Try: ollama-start`);
+  }finally{isStreaming=false;sendBtn.disabled=false;promptEl.focus();}
 }
-
-function clearChat() {
-  messages = [];
-  msgDiv.innerHTML = `<div class="empty-state"><h2>⚡ Neural Terminal</h2>
-    <p>Chat cleared.</p><p id="empty-hint" style="color:var(--muted);font-size:12px;">Ready.</p></div>`;
-}
-
-input.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+document.getElementById('export-btn').addEventListener('click',()=>{
+  const sess=getActive();const msgs=sess.history.filter(m=>m.role!=='system');
+  if(!msgs.length){alert('Nothing to export.');return;}
+  const model=sel.value||'unknown';
+  let md=`# ${sess.name}\n\n**Model:** ${model}  \n**Exported:** ${new Date().toLocaleString()}\n\n---\n\n`;
+  msgs.forEach(m=>{md+=(m.role==='user'?'## 👤 User':'## 🤖 Assistant')+`\n\n${m.content}\n\n---\n\n`;});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([md],{type:'text/markdown'}));
+  a.download=(sess.name.replace(/[^a-z0-9]/gi,'_').toLowerCase()||'chat')+'.md';
+  a.click();URL.revokeObjectURL(a.href);
 });
-input.addEventListener('input', () => {
-  input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
-});
-
-loadModels();
-setInterval(loadModels, 30000);
+renderSidebar();renderMessages();promptEl.focus();
 </script>
 </body>
 </html>
-HTML_EOF
+"""
+path = os.path.expanduser('$HOME/.local/share/llm-webui/llm-chat.html')
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    f.write(html)
+print(f"Neural Terminal written: {path}")
+PYHTML
 
 # Neural Terminal launcher
-cat > "${BIN_DIR}/llm-chat" <<SCRIPT_EOF
+cat > "$BIN_DIR/llm-chat" <<'NT_L'
 #!/usr/bin/env bash
+# llm-chat / chat — Neural Terminal (zero-dependency HTML fallback UI)
+set -uo pipefail
+GUI_DIR="$HOME/.local/share/llm-webui"
+HTML_FILE="$GUI_DIR/llm-chat.html"
+BIN_DIR="$HOME/.local/bin"
 PORT=8090
-pkill -f "python.*$PORT" 2>/dev/null || true
-_gui_dir="\$HOME/.local/share/llm-webui"
-cd "\$_gui_dir" || exit 1
-python3 -m http.server \$PORT --bind 127.0.0.1 >/dev/null 2>&1 &
-echo "Neural Terminal started at http://localhost:\$PORT"
-xdg-open "http://localhost:\$PORT" 2>/dev/null \
-    || explorer.exe "http://localhost:\$PORT" 2>/dev/null \
-    || echo "Open: http://localhost:\$PORT"
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-chat"
 
-info "Web UI components installed."
+[[ ! -f "$HTML_FILE" ]] && { echo "ERROR: HTML file not found. Run: llm-setup"; exit 1; }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 14 — OPTIONAL TOOLS (interactive menu)
-# ═══════════════════════════════════════════════════════════════════════════════
+_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+if ! _up; then
+    echo "→ Starting Ollama…"
+    grep -qi microsoft /proc/version 2>/dev/null \
+        && { [[ -x "$BIN_DIR/ollama-start" ]] && "$BIN_DIR/ollama-start" \
+            || nohup ollama serve >"$HOME/.ollama.log" 2>&1 &; } \
+        || { sudo systemctl start ollama 2>/dev/null \
+            || nohup ollama serve >"$HOME/.ollama.log" 2>&1 &; }
+    for _i in {1..12}; do _up && break; sleep 1; done
+fi
+
+# Kill stale server on port
+OLD=$(lsof -ti tcp:$PORT 2>/dev/null || true)
+[[ -n "$OLD" ]] && { kill "$OLD" 2>/dev/null || true; sleep 0.5; }
+
+echo "→ Starting Neural Terminal on http://localhost:$PORT …"
+python3 -m http.server "$PORT" --directory "$GUI_DIR" --bind 127.0.0.1 >/dev/null 2>&1 &
+HTTP_PID=$!
+sleep 0.8
+
+kill -0 "$HTTP_PID" 2>/dev/null || { echo "ERROR: HTTP server failed — port $PORT in use?"; exit 1; }
+URL="http://localhost:$PORT/llm-chat.html"
+echo "→ $URL  (Ctrl+C to stop)"
+grep -qi microsoft /proc/version 2>/dev/null \
+    && { cmd.exe /c start "" "$URL" 2>/dev/null || true; } \
+    || xdg-open "$URL" 2>/dev/null || echo "  Open manually: $URL"
+
+trap "echo ''; echo 'Stopping…'; kill $HTTP_PID 2>/dev/null; exit 0" INT TERM
+wait "$HTTP_PID"
+NT_L
+chmod +x "$BIN_DIR/llm-chat"
+cp "$BIN_DIR/llm-chat" "$BIN_DIR/chat" 2>/dev/null \
+    || ln -sf "$BIN_DIR/llm-chat" "$BIN_DIR/chat" || true
+chmod +x "$BIN_DIR/chat" 2>/dev/null || true
+info "Neural Terminal: llm-chat / chat → http://localhost:8090"
+
+# =============================================================================
+# STEP 15 — OPTIONAL TOOLS
+# =============================================================================
 step "Optional tools"
 
-echo ""
-_rule "─"
-echo -e "  ${BOLD}Optional tools — enter numbers (space-separated) or Enter to skip${NC}"
-_rule "─"
-echo ""
-echo -e "  ${CYAN}── System utilities ──────────────────────────────────────────────${NC}"
-echo -e "  ${YELLOW}1${NC}   tmux          Terminal multiplexer"
-echo -e "  ${YELLOW}2${NC}   CLI tools     bat · eza · fzf · ripgrep · btop · ncdu · jq · micro"
-(( HAS_GPU )) && echo -e "  ${YELLOW}3${NC}   nvtop         GPU monitor" || echo -e "  ${MUTED}3${NC}   nvtop         GPU monitor  ${MUTED}(no GPU detected — will skip)${NC}"
-[[ -n "${DISPLAY:-}" ]] && echo -e "  ${YELLOW}4${NC}   GUI tools     Thunar · Mousepad · Meld" || echo -e "  ${MUTED}4${NC}   GUI tools     Thunar · Mousepad · Meld  ${MUTED}(no DISPLAY — will skip)${NC}"
-echo -e "  ${YELLOW}5${NC}   neofetch      System info banner + fastfetch"
-echo ""
-echo -e "  ${CYAN}── AI coding agents ──────────────────────────────────────────────${NC}"
-echo -e "  ${YELLOW}6${NC}   Claude Code   Anthropic CLI agent  ${MUTED}(needs ANTHROPIC_API_KEY)${NC}"
-echo -e "  ${YELLOW}7${NC}   OpenAI Codex  OpenAI CLI agent  ${MUTED}(needs Node ≥22, OPENAI_API_KEY)${NC}"
-echo ""
-_rule "─"
-printf "  ${ACCENT}?${NC}  ${BOLD}Select tools [1 2 3… / all / Enter to skip]:${NC} "
-if [[ -t 0 ]]; then
-    read -r _tool_sel
-else
-    _tool_sel=""
-    warn "Non-interactive mode — skipping optional tools."
+HAVE_DISPLAY=0
+{ [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; } && HAVE_DISPLAY=1
+is_wsl2 && HAVE_DISPLAY=1
+
+printf "\n"
+printf "  ${CYAN}Which optional tools would you like?${NC}\n"
+printf "  ${MUTED}Enter numbers space-separated, 'all', or Enter to skip.${NC}\n\n"
+printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "1" "tmux"       "terminal multiplexer"
+printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "2" "CLI tools"  "bat eza fzf ripgrep btop ncdu jq micro"
+(( HAS_GPU )) \
+    && printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "3" "nvtop"      "live GPU VRAM monitor" \
+    || printf "  ${MUTED}%-4s  %-20s  %s${NC}\n"  "3" "nvtop"      "(no GPU — skipped)"
+(( HAVE_DISPLAY )) \
+    && printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "4" "GUI tools"  "Thunar Mousepad Meld" \
+    || printf "  ${MUTED}%-4s  %-20s  %s${NC}\n"  "4" "GUI tools"  "(no display — skipped)"
+printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "5" "neofetch"   "system info banner"
+printf "\n  ${CYAN}── AI coding agents ─────────────────────────────────────────${NC}\n"
+printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "6" "Claude Code"   "Anthropic CLI agent (needs ANTHROPIC_API_KEY)"
+printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "7" "OpenAI Codex"  "OpenAI CLI agent (needs OPENAI_API_KEY)"
+printf "\n  ${CYAN}── Security / Pentesting ────────────────────────────────────${NC}\n"
+printf "  ${YELLOW}%-4s${NC}  %-20s  %s\n" "8" "PentestAgent"  "AI pentesting framework (RAG + Ollama)"
+printf "\n"
+[[ -t 0 ]] && read -r -p "  > " _tools || _tools=""
+[[ "${_tools:-}" == "all" ]] && _tools="1 2 3 4 5 6 7 8"
+
+# 1 — tmux
+if [[ " ${_tools:-} " == *" 1 "* ]]; then
+    sudo apt-get install -y tmux >> "$LOG_FILE" 2>&1 && info "tmux installed." || warn "tmux install failed."
+    [[ ! -f "$HOME/.tmux.conf" ]] && cat > "$HOME/.tmux.conf" <<'TC'
+set -g default-terminal "screen-256color"
+set -g history-limit 10000
+set -g mouse on
+set -g base-index 1
+set -g pane-base-index 1
+set -g status-style 'bg=#1a2535 fg=#00ff88'
+set -g status-left '#[bold] 🤖 LLM  '
+set -g status-right '#[fg=#00d4ff] %H:%M  #[fg=#00ff88]%d-%b '
+bind | split-window -h -c "#{pane_current_path}"
+bind - split-window -v -c "#{pane_current_path}"
+bind r source-file ~/.tmux.conf \; display "Config reloaded"
+TC
 fi
 
-[[ "${_tool_sel:-}" == "all" ]] && _tool_sel=" 1 2 3 4 5 6 7 "
-_tool_sel=" ${_tool_sel} "
-
-# ── Tool 1: tmux ──────────────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 1 "* ]]; then
-    spin_start "Installing tmux…"
-    sudo apt-get install -y -qq tmux >/dev/null 2>&1 || warn "tmux install failed"
-    spin_stop $?
-fi
-
-# ── Tool 2: CLI tools ─────────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 2 "* ]]; then
-    spin_start "Installing CLI tools (bat, fzf, ripgrep, btop, ncdu, jq, micro)…"
-    sudo apt-get install -y -qq bat fzf ripgrep btop ncdu jq >/dev/null 2>&1 || warn "Some CLI tools failed"
-    # eza (newer ls replacement)
-    if ! command -v eza &>/dev/null; then
-        wget -q "https://github.com/eza-community/eza/releases/latest/download/eza_x86_64-unknown-linux-gnu.tar.gz" \
-            -O /tmp/eza.tar.gz 2>/dev/null \
-            && tar xzf /tmp/eza.tar.gz -C /tmp/ 2>/dev/null \
-            && mv /tmp/eza "${BIN_DIR}/eza" 2>/dev/null \
-            && chmod +x "${BIN_DIR}/eza" \
-            || warn "eza install failed"
+# 2 — CLI tools
+if [[ " ${_tools:-} " == *" 2 "* ]]; then
+    _apt_install bat fzf ripgrep fd-find btop htop ncdu jq tree p7zip-full unzip zip
+    command -v eza &>/dev/null || sudo apt-get install -y eza >> "$LOG_FILE" 2>&1 \
+        || sudo apt-get install -y exa >> "$LOG_FILE" 2>&1 || true
+    command -v micro &>/dev/null || {
+        curl -fsSL https://getmic.ro 2>/dev/null | bash \
+            && mv micro "$BIN_DIR/" 2>/dev/null || true
+    }
+    if ! grep -q "# llm-qol-aliases" "$HOME/.bashrc" 2>/dev/null; then
+        cat >> "$HOME/.bashrc" <<'QOL'
+# ── QoL aliases (llm-auto-setup) ────────────────────────────────────────────
+# llm-qol-aliases
+command -v bat    &>/dev/null && alias cat='bat --paging=never'
+command -v eza    &>/dev/null && alias ls='eza --icons' && alias ll='eza -la --icons'
+command -v btop   &>/dev/null && alias top='btop'
+command -v fdfind &>/dev/null && ! command -v fd &>/dev/null && alias fd='fdfind'
+QOL
     fi
-    # micro editor
-    if ! command -v micro &>/dev/null; then
-        curl -fsSL https://getmic.ro | bash 2>/dev/null \
-            && mv micro "${BIN_DIR}/micro" 2>/dev/null \
-            || sudo apt-get install -y -qq micro >/dev/null 2>&1 \
-            || warn "micro install failed"
-    fi
-    spin_stop $?
+    info "CLI tools installed."
 fi
 
-# ── Tool 3: nvtop ─────────────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 3 "* ]]; then
-    if (( HAS_GPU )); then
-        spin_start "Installing nvtop…"
-        sudo apt-get install -y -qq nvtop >/dev/null 2>&1 || warn "nvtop install failed"
-        spin_stop $?
+# 3 — nvtop
+if [[ " ${_tools:-} " == *" 3 "* ]] && (( HAS_GPU )); then
+    sudo apt-get install -y nvtop >> "$LOG_FILE" 2>&1 \
+        && info "nvtop installed." || warn "nvtop: try: sudo snap install nvtop"
+fi
+
+# 4 — GUI tools
+if [[ " ${_tools:-} " == *" 4 "* ]] && (( HAVE_DISPLAY )); then
+    _apt_install thunar mousepad meld
+    info "GUI tools installed."
+fi
+
+# 5 — neofetch/fastfetch
+if [[ " ${_tools:-} " == *" 5 "* ]]; then
+    sudo apt-get install -y neofetch >> "$LOG_FILE" 2>&1 || true
+    sudo apt-get install -y fastfetch >> "$LOG_FILE" 2>&1 \
+        || sudo snap install fastfetch >> "$LOG_FILE" 2>&1 || true
+    info "neofetch / fastfetch installed."
+fi
+
+# 6 — Claude Code
+if [[ " ${_tools:-} " == *" 6 "* ]]; then
+    if command -v npm &>/dev/null; then
+        sudo npm install -g @anthropic-ai/claude-code >> "$LOG_FILE" 2>&1 \
+            && info "Claude Code installed." || warn "Claude Code install failed."
+        cat > "$BIN_DIR/claude-code" <<'CC'
+#!/usr/bin/env bash
+mkdir -p "$HOME/work"; cd "$HOME/work"
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "  ANTHROPIC_API_KEY not set."
+    echo "  Get a key: https://console.anthropic.com/"
+    read -r -p "  Enter key (or Enter to exit): " _k
+    [[ -z "$_k" ]] && exit 1
+    export ANTHROPIC_API_KEY="$_k"
+fi
+exec claude "$@"
+CC
+        chmod +x "$BIN_DIR/claude-code"
+        info "Claude Code → run: claude  (set: export ANTHROPIC_API_KEY=sk-ant-...)"
     else
-        warn "No GPU detected — skipping nvtop."
+        warn "Claude Code skipped — Node.js not available."
     fi
 fi
 
-# ── Tool 4: GUI tools ─────────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 4 "* ]]; then
-    if [[ -n "${DISPLAY:-}" ]]; then
-        spin_start "Installing GUI tools (Thunar, Mousepad, Meld)…"
-        sudo apt-get install -y -qq thunar mousepad meld >/dev/null 2>&1 || warn "Some GUI tools failed"
-        spin_stop $?
+# 7 — OpenAI Codex
+if [[ " ${_tools:-} " == *" 7 "* ]]; then
+    if command -v npm &>/dev/null; then
+        sudo npm install -g @openai/codex >> "$LOG_FILE" 2>&1 \
+            && info "OpenAI Codex installed." || warn "OpenAI Codex install failed."
     else
-        warn "No DISPLAY set — skipping GUI tools."
+        warn "OpenAI Codex skipped — Node.js not available."
     fi
 fi
 
-# ── Tool 5: neofetch ─────────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 5 "* ]]; then
-    spin_start "Installing neofetch + fastfetch…"
-    sudo apt-get install -y -qq neofetch >/dev/null 2>&1 || warn "neofetch failed"
-    command -v fastfetch &>/dev/null || \
-        sudo apt-get install -y -qq fastfetch >/dev/null 2>&1 || true
-    spin_stop $?
-fi
-
-# ── Tool 6: Claude Code ───────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 6 "* ]]; then
-    if command -v node &>/dev/null && _ver_ge "$(node --version | grep -oP '[0-9]+' | head -1).0.0" "18.0.0"; then
-        spin_start "Installing Claude Code (npm)…"
-        npm install -g @anthropic-ai/claude-code --quiet 2>/dev/null || warn "Claude Code install failed"
-        spin_stop $?
-        info "Claude Code installed. Set ANTHROPIC_API_KEY to use."
-    else
-        warn "Node.js ≥18 required for Claude Code."
-        info "Install Node.js 18+ then run: npm install -g @anthropic-ai/claude-code"
+# 8 — PentestAgent
+if [[ " ${_tools:-} " == *" 8 "* ]]; then
+    PA_DIR="$HOME/pentestagent"
+    PA_VENV="$PA_DIR/venv"
+    PA_LAUNCH="$BIN_DIR/pentestagent-start"
+    info "Installing PentestAgent…"
+    command -v git &>/dev/null || sudo apt-get install -y git >> "$LOG_FILE" 2>&1
+    [[ -d "$PA_DIR" ]] || git clone https://github.com/vishnupriyavr/pentest-agent "$PA_DIR" >> "$LOG_FILE" 2>&1 \
+        || warn "PentestAgent: git clone failed."
+    if [[ -d "$PA_DIR" ]]; then
+        _ensure_venv "$PA_VENV"
+        _pip_with_ticker "pip: pentestagent deps" \
+            "$PA_VENV/bin/pip" install -r "$PA_DIR/requirements.txt" \
+            || warn "PentestAgent pip install failed."
+        cat > "$BIN_DIR/pentestagent-start" <<'PA'
+#!/usr/bin/env bash
+PA_DIR="$HOME/pentestagent"; PA_VENV="$PA_DIR/venv"
+[[ ! -d "$PA_VENV" ]] && { echo "PentestAgent not installed. Run: llm-setup → opt 8"; exit 1; }
+_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+_up || { nohup ollama serve >"$HOME/.ollama.log" 2>&1 & sleep 3; }
+ollama list 2>/dev/null | grep -q "nomic-embed-text" \
+    || ollama pull nomic-embed-text 2>/dev/null || true
+export OPENAI_API_KEY="ollama-local"
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+source "$PA_VENV/bin/activate"
+cd "$PA_DIR"
+exec pentestagent "$@"
+PA
+        chmod +x "$BIN_DIR/pentestagent-start"
+        info "PentestAgent installed. Launch: pentestagent-start"
+        warn "LEGAL: Only test systems you own or have written permission to test."
     fi
 fi
 
-# ── Tool 7: OpenAI Codex ─────────────────────────────────────────────────────
-if [[ " ${_tool_sel} " == *" 7 "* ]]; then
-    if command -v node &>/dev/null && _ver_ge "$(node --version | grep -oP '[0-9]+' | head -1).0.0" "22.0.0"; then
-        spin_start "Installing OpenAI Codex CLI…"
-        npm install -g @openai/codex --quiet 2>/dev/null || warn "codex install failed"
-        spin_stop $?
-        info "OpenAI Codex installed. Set OPENAI_API_KEY to use."
-    else
-        warn "Node.js ≥22 required for OpenAI Codex."
-        info "Install Node.js 22+ then run: npm install -g @openai/codex"
-    fi
-fi
+[[ -n "${_tools:-}" ]] && info "Optional tools complete." || info "Optional tools: skipped."
+unset _tools HAVE_DISPLAY
 
-info "Optional tools step complete."
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 15 — AUTONOMOUS COWORKING (Open Interpreter + Aider)
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+# STEP 16 — AUTONOMOUS COWORKING (Open Interpreter + Aider)
+# =============================================================================
 step "Autonomous coworking (Open Interpreter + Aider)"
 
-# ── Open Interpreter ──────────────────────────────────────────────────────────
-info "Setting up Open Interpreter (cowork)…"
+# ── Open Interpreter ─────────────────────────────────────────────────────────
+info "Installing Open Interpreter (pkg_resources fix applied)…"
 
-# ALWAYS rebuild from scratch to avoid pkg_resources corruption
-[[ -d "$OI_VENV" ]] && rm -rf "$OI_VENV"
-"$PYTHON3" -m venv "$OI_VENV" 2>&1 | tail -2 \
-    || error "Cannot create OI venv at $OI_VENV"
+# Always recreate OI venv — stale venvs on Python 3.12 consistently break pkg_resources
+rm -rf "$OI_VENV"
+"${PYTHON_BIN:-python3}" -m venv "$OI_VENV" \
+    || error "Failed to create Open Interpreter venv."
 
-spin_start "Installing Open Interpreter…"
-"$OI_VENV/bin/python3" -m pip install --upgrade pip setuptools wheel --quiet 2>/dev/null
-"$OI_VENV/bin/python3" -m pip install --upgrade "setuptools>=70" --no-cache-dir --quiet 2>/dev/null
-# Verify pkg_resources before proceeding
-"$OI_VENV/bin/python3" -c "import pkg_resources" 2>/dev/null \
-    || { "$OI_VENV/bin/python3" -m pip install --force-reinstall setuptools --no-cache-dir --quiet 2>/dev/null; }
-"$OI_VENV/bin/python3" -m pip install open-interpreter --quiet 2>/dev/null \
-    || warn "Open Interpreter install had warnings"
-spin_stop $?
+_pbar 10 "Bootstrap pip"
+"$OI_VENV/bin/python3" -m ensurepip --upgrade >> "$LOG_FILE" 2>&1 || true
+"$OI_VENV/bin/pip" install --upgrade --no-cache-dir pip >> "$LOG_FILE" 2>&1
 
-# Launcher — uses single-quotes to avoid variable expansion during setup
-cat > "${BIN_DIR}/cowork" <<'SCRIPT_EOF'
+_pbar 20 "setuptools≥70 (pkg_resources fix)"
+"$OI_VENV/bin/pip" install --no-cache-dir "setuptools>=70" wheel >> "$LOG_FILE" 2>&1
+
+# pkg_resources guaranteed check — covers Python 3.12+ stdlib omission
+if ! "$OI_VENV/bin/python3" -c "import pkg_resources" 2>/dev/null; then
+    _pbar 25 "Force-reinstall setuptools"
+    "$OI_VENV/bin/pip" install --force-reinstall --no-cache-dir "setuptools>=70" >> "$LOG_FILE" 2>&1
+fi
+
+# Last resort: copy from system if pip can't deliver it
+if ! "$OI_VENV/bin/python3" -c "import pkg_resources" 2>/dev/null; then
+    _pbar 28 "Injecting system setuptools"
+    _sys_st=$(python3 -c "import setuptools,os; print(os.path.dirname(setuptools.__file__))" 2>/dev/null || true)
+    _venv_sp=$(ls -d "$OI_VENV/lib/python3"*/site-packages 2>/dev/null | head -1 || true)
+    [[ -n "$_sys_st" && -n "$_venv_sp" ]] && cp -r "$_sys_st" "$_venv_sp/" 2>/dev/null || true
+    unset _sys_st _venv_sp
+fi
+
+_pbar 30 "pip: open-interpreter"
+_pip_with_ticker "pip: open-interpreter" \
+    "$OI_VENV/bin/pip" install --no-cache-dir open-interpreter
+
+if "$OI_VENV/bin/python3" -c "import pkg_resources; import interpreter" 2>/dev/null; then
+    info "Open Interpreter ✓  (pkg_resources OK)"
+else
+    warn "Open Interpreter health check failed — run 'cowork' to test; re-run setup if it crashes."
+fi
+
+# cowork launcher — tool integration via Ollama OpenAI-compatible /v1 API
+cat > "$BIN_DIR/cowork" <<'CW'
 #!/usr/bin/env bash
-# cowork — Open Interpreter backed by local Ollama
+# cowork — autonomous AI coworker (Open Interpreter + Ollama)
+# Tool calling: models with [TOOLS] cap use openai/ prefix → Ollama /v1/chat/completions
+set -uo pipefail
 OI_VENV="$HOME/.local/share/open-interpreter-venv"
 CONFIG="$HOME/.config/local-llm/selected_model.conf"
-OLLAMA_TAG="qwen3:14b"
-[[ -f "$CONFIG" ]] && { _t=$(grep ^OLLAMA_TAG= "$CONFIG" | cut -d'"' -f2); [[ -n "$_t" ]] && OLLAMA_TAG="$_t"; }
+WORK_DIR="$HOME/work"
 
-# Auto-rebuild venv if broken
-if [[ ! -x "$OI_VENV/bin/python3" ]]; then
-    echo "  ⚠  open-interpreter-venv missing — rebuilding…"
-    _py=$(command -v python3.12 || command -v python3.11 || command -v python3)
-    "$_py" -m venv "$OI_VENV" || { echo "ERROR: cannot create venv"; exit 1; }
-    "$OI_VENV/bin/python3" -m pip install --upgrade pip "setuptools>=70" open-interpreter --quiet 2>/dev/null \
-        || echo "  ⚠  open-interpreter install failed"
+[[ ! -x "$OI_VENV/bin/interpreter" ]] && {
+    echo "ERROR: Open Interpreter not installed. Run: llm-setup"
+    exit 1
+}
+mkdir -p "$WORK_DIR"; cd "$WORK_DIR"
+
+OLLAMA_TAG=$(grep "^OLLAMA_TAG=" "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f2 || echo "qwen3:8b")
+MODEL_CAPS=$(grep "^MODEL_CAPS=" "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f2 || echo "")
+
+_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+STARTED_OLLAMA=0
+if ! _up; then
+    echo "→ Starting Ollama…"
+    grep -qi microsoft /proc/version 2>/dev/null \
+        && { command -v ollama-start &>/dev/null && ollama-start \
+            || nohup ollama serve >"$HOME/.ollama.log" 2>&1 &; } \
+        || { sudo systemctl start ollama 2>/dev/null \
+            || nohup ollama serve >"$HOME/.ollama.log" 2>&1 &; }
+    STARTED_OLLAMA=1
+    for _i in {1..15}; do _up && break; sleep 1; done
 fi
+_cleanup() { (( ${STARTED_OLLAMA:-0} )) && pkill -f "ollama serve" 2>/dev/null || true; }
+trap '_cleanup' INT TERM EXIT
 
-_ollama_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
-_ollama_up || { nohup ollama serve >/dev/null 2>&1 & sleep 3; }
+echo ""
+echo "  ╔══════════════════════════════════════════════════════════════════════╗"
+echo "  ║           🤖  AUTONOMOUS COWORKER                                    ║"
+printf "  ║  Model  : %-39s║\n" "$OLLAMA_TAG"
+printf "  ║  Caps   : %-39s║\n" "${MODEL_CAPS:-general}"
+echo "  ║  Backend: Ollama /v1 (fully local)                                   ║"
+echo "  ║  Dir    : ~/work  ·  type 'exit' to quit                             ║"
+echo "  ╚══════════════════════════════════════════════════════════════════════╝"
+echo ""
 
-export OPENAI_API_KEY="local"
+# Tool calling: Open Interpreter uses OpenAI-compatible /v1 endpoint
+# Models with TOOLS capability (Qwen3, Phi-4, Mistral) support function calling
+export OPENAI_API_KEY="ollama"
+export OPENAI_BASE_URL="http://127.0.0.1:11434/v1"
 export OPENAI_API_BASE="http://127.0.0.1:11434/v1"
 
-source "$OI_VENV/bin/activate"
-exec interpreter --model "openai/$OLLAMA_TAG" "$@"
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/cowork"
+"$OI_VENV/bin/interpreter" \
+    --model "openai/${OLLAMA_TAG}" \
+    --context_window 8192 \
+    --max_tokens 4096 \
+    --api_base "http://127.0.0.1:11434/v1" \
+    --api_key "ollama" \
+    --safe_mode "off" \
+    "$@"
+CW
+chmod +x "$BIN_DIR/cowork"
 
-# ── Aider ─────────────────────────────────────────────────────────────────────
-info "Setting up Aider…"
+# ── Aider ────────────────────────────────────────────────────────────────────
+info "Installing Aider…"
 _ensure_venv "$AI_VENV"
-spin_start "Installing Aider…"
-"$AI_VENV/bin/python3" -m pip install aider-chat --quiet 2>/dev/null \
-    || warn "Aider install had warnings"
-spin_stop $?
+_pip_with_ticker "pip: aider-chat" \
+    "$AI_VENV/bin/pip" install aider-chat \
+    || warn "Aider install failed."
 
-cat > "${BIN_DIR}/aider" <<'SCRIPT_EOF'
+cat > "$BIN_DIR/aider" <<'AI'
 #!/usr/bin/env bash
+# aider — AI pair programmer with git integration (via Ollama)
+set -uo pipefail
 AI_VENV="$HOME/.local/share/aider-venv"
 CONFIG="$HOME/.config/local-llm/selected_model.conf"
-OLLAMA_TAG="qwen3:14b"
-[[ -f "$CONFIG" ]] && { _t=$(grep ^OLLAMA_TAG= "$CONFIG" | cut -d'"' -f2); [[ -n "$_t" ]] && OLLAMA_TAG="$_t"; }
 
-# Auto-rebuild venv if broken
-if [[ ! -x "$AI_VENV/bin/python3" ]]; then
-    echo "  ⚠  aider-venv missing — rebuilding…"
-    _py=$(command -v python3.12 || command -v python3.11 || command -v python3)
-    "$_py" -m venv "$AI_VENV" || { echo "ERROR: cannot create venv"; exit 1; }
-    "$AI_VENV/bin/python3" -m pip install --upgrade pip aider-chat --quiet 2>/dev/null \
-        || echo "  ⚠  aider install failed"
+[[ ! -x "$AI_VENV/bin/aider" ]] && { echo "ERROR: Aider not installed. Run: llm-setup"; exit 1; }
+
+OLLAMA_TAG=$(grep "^OLLAMA_TAG=" "$CONFIG" 2>/dev/null | head -1 | cut -d'"' -f2 || echo "qwen3:8b")
+
+_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
+STARTED_OLLAMA=0
+if ! _up; then
+    echo "→ Starting Ollama…"
+    grep -qi microsoft /proc/version 2>/dev/null \
+        && { command -v ollama-start &>/dev/null && ollama-start \
+            || nohup ollama serve >"$HOME/.ollama.log" 2>&1 &; } \
+        || { sudo systemctl start ollama 2>/dev/null \
+            || nohup ollama serve >"$HOME/.ollama.log" 2>&1 &; }
+    STARTED_OLLAMA=1; sleep 3
 fi
+_cleanup() { (( ${STARTED_OLLAMA:-0} )) && pkill -f "ollama serve" 2>/dev/null || true; }
+trap '_cleanup' INT TERM EXIT
 
-_ollama_up() { curl -sf --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; }
-_ollama_up || { nohup ollama serve >/dev/null 2>&1 & sleep 3; }
+echo ""
+echo "  ╔══════════════════════════════════════════════════════════════════════╗"
+echo "  ║         🛠  AIDER  —  AI PAIR PROGRAMMER                             ║"
+printf "  ║  Model : %-41s║\n" "$OLLAMA_TAG"
+echo "  ║  Usage : aider file.py  (or no args for chat)                        ║"
+echo "  ╚══════════════════════════════════════════════════════════════════════╝"
+echo ""
 
-source "$AI_VENV/bin/activate"
-exec aider \
-    --model "ollama/$OLLAMA_TAG" \
-    --no-fancy-input \
-    --no-show-release-notes \
+# Tool calling via ollama_chat/ provider (uses /api/chat — best Ollama integration)
+export OLLAMA_API_BASE="http://127.0.0.1:11434"
+
+"$AI_VENV/bin/aider" \
+    --model "ollama_chat/${OLLAMA_TAG}" \
+    --ollama-api-base "http://127.0.0.1:11434" \
+    --no-auto-commits \
     --no-check-update \
+    --no-show-model-warnings \
+    --no-show-release-notes \
+    --analytics-disable \
+    --no-gitignore \
+    --no-fancy-input \
+    --stream \
     "$@"
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/aider"
+AI
+chmod +x "$BIN_DIR/aider"
 
-info "Coworking tools installed."
+info "cowork (Open Interpreter) and aider installed."
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 16 — LLM-CHECKER
-# ═══════════════════════════════════════════════════════════════════════════════
-step "llm-checker (diagnostics dashboard)"
-
-cat > "${BIN_DIR}/llm-checker" <<'SCRIPT_EOF'
-#!/usr/bin/env bash
-C='\033[0;36m'; Y='\033[1;33m'; G='\033[0;32m'; R='\033[0;31m'; N='\033[0m'; B='\033[1m'
-M='\033[38;5;240m'; A='\033[38;5;39m'; A2='\033[38;5;82m'; W='\033[38;5;214m'
-_TW=$(( $(tput cols 2>/dev/null || echo 80) < 110 ? $(tput cols 2>/dev/null || echo 80) : 110 ))
-_rule() { printf "${M}%*s${N}\n" "$_TW" "" | tr ' ' "${1:-─}"; }
-CONFIG="$HOME/.config/local-llm/selected_model.conf"
-[[ -f "$CONFIG" ]] && source "$CONFIG"
-
-clear
-echo ""
-_rule "═"
-echo -e "${B}${A}  LOCAL LLM — DIAGNOSTICS DASHBOARD${N}"
-_rule "═"
-echo ""
-
-# Hardware
-echo -e "  ${B}Hardware${N}"
-printf "  ${C}%-20s${N}  %s\n" "CPU" "$(grep '^model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | sed 's/^ *//' || echo unknown)"
-printf "  ${C}%-20s${N}  %s\n" "RAM" "$(awk '/MemTotal/{printf "%d GB total",int($2/1024/1024)}' /proc/meminfo 2>/dev/null) / $(awk '/MemAvailable/{printf "%d GB avail",int($2/1024/1024)}' /proc/meminfo 2>/dev/null)"
-if command -v nvidia-smi &>/dev/null; then
-    _gpu=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
-    printf "  ${C}%-20s${N}  %s\n" "GPU (NVIDIA)" "$_gpu"
-    printf "  ${C}%-20s${N}  %s\n" "CUDA driver" "$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9.]+' | head -1 || echo unknown)"
-elif command -v rocminfo &>/dev/null; then
-    printf "  ${C}%-20s${N}  %s\n" "GPU (AMD)" "$(rocminfo 2>/dev/null | grep 'Marketing Name' | head -1 | cut -d: -f2 | sed 's/^ *//' || echo AMD GPU)"
-else
-    printf "  ${C}%-20s${N}  %s\n" "GPU" "None detected"
-fi
-echo ""
-
-# Services
-echo -e "  ${B}Services${N}"
-if curl -sf --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-    printf "  ${A2}✓${N}  %-20s  %s\n" "Ollama" "running on :11434"
-    _loaded=$(curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null \
-        | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('models',[]))); [print('      '+m['name']) for m in d.get('models',[])]" 2>/dev/null || echo "?")
-else
-    printf "  ${W}○${N}  %-20s  %s\n" "Ollama" "stopped"
-fi
-
-if curl -sf --max-time 2 http://127.0.0.1:8080 >/dev/null 2>&1; then
-    printf "  ${A2}✓${N}  %-20s  %s\n" "Open WebUI" "running on :8080"
-else
-    printf "  ${W}○${N}  %-20s  %s\n" "Open WebUI" "stopped"
-fi
-
-if curl -sf --max-time 2 http://127.0.0.1:8090 >/dev/null 2>&1; then
-    printf "  ${A2}✓${N}  %-20s  %s\n" "Neural Terminal" "running on :8090"
-else
-    printf "  ${W}○${N}  %-20s  %s\n" "Neural Terminal" "stopped"
-fi
-echo ""
-
-# Active model
-echo -e "  ${B}Active Model${N}"
-printf "  ${C}%-20s${N}  %s\n" "Name"       "${MODEL_NAME:-not set}"
-printf "  ${C}%-20s${N}  %s\n" "Ollama tag" "${OLLAMA_TAG:-not set}"
-printf "  ${C}%-20s${N}  %s\n" "GPU layers" "${GPU_LAYERS:-?}"
-printf "  ${C}%-20s${N}  %s\n" "Batch size" "${BATCH_SIZE:-?}"
-printf "  ${C}%-20s${N}  %s\n" "HW threads" "${HW_THREADS:-?}"
-echo ""
-
-# GGUF files
-echo -e "  ${B}Downloaded GGUFs${N}"
-_gdir="${GGUF_MODELS:-$HOME/local-llm-models/gguf}"
-if ls "$_gdir"/*.gguf 2>/dev/null | head -1 &>/dev/null; then
-    ls -lh "$_gdir"/*.gguf 2>/dev/null | awk '{printf "  %-55s  %s\n", $NF, $5}'
-else
-    echo -e "  ${M}(none)${N}"
-fi
-echo ""
-
-# Installed tools
-echo -e "  ${B}Tools${N}"
-for _t in ollama wget curl python3 git node; do
-    command -v "$_t" &>/dev/null \
-        && printf "  ${A2}✓${N}  %-16s  %s\n" "$_t" "$(command -v $_t)" \
-        || printf "  ${W}✗${N}  %-16s  %s\n" "$_t" "not found"
-done
-echo ""
-
-# Python venvs
-echo -e "  ${B}Python venvs${N}"
-for _v in "$HOME/.local/share/llm-venv" \
-          "$HOME/.local/share/open-webui-venv" \
-          "$HOME/.local/share/open-interpreter-venv" \
-          "$HOME/.local/share/aider-venv"; do
-    [[ -d "$_v" ]] \
-        && printf "  ${A2}✓${N}  %s\n" "$(basename $_v)" \
-        || printf "  ${W}○${N}  ${M}%s (not installed)${N}\n" "$(basename $_v)"
-done
-echo ""
-_rule "─"
-echo -e "  ${M}Run: llm-help for command reference  |  webui to start Open WebUI${N}"
-_rule "─"
-echo ""
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-checker"
-
-info "llm-checker installed."
-
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # STEP 17 — LLM-HELP
-# ═══════════════════════════════════════════════════════════════════════════════
-step "llm-help (command reference)"
-
-cat > "${BIN_DIR}/llm-help" <<'SCRIPT_EOF'
+# =============================================================================
+cat > "$BIN_DIR/llm-help" <<'HELP'
 #!/usr/bin/env bash
-_C='\033[0;36m'; _Y='\033[1;33m'; _G='\033[0;32m'; _N='\033[0m'; _B='\033[1m'
-_M='\033[38;5;240m'; _A='\033[38;5;39m'; _R='\033[38;5;214m'
-_TW=$(( $(tput cols 2>/dev/null || echo 80) < 100 ? $(tput cols 2>/dev/null || echo 80) : 100 ))
-_rule() { printf "${_M}%*s${_N}\n" "$_TW" "" | tr ' ' "─"; }
-
-clear
+_C='\033[0;36m' _Y='\033[1;33m' _G='\033[0;32m' _M='\033[0;35m' _N='\033[0m'
 echo ""
-_rule
-echo -e "${_B}${_A}  LOCAL LLM — COMMAND REFERENCE${_N}"
-_rule
+echo -e "${_C}╔══════════════════════════════════════════════════════════════════════════════════╗${_N}"
+echo -e "${_C}║              🤖  LOCAL LLM  —  COMMAND REFERENCE                                 ║${_N}"
+echo -e "${_C}╚══════════════════════════════════════════════════════════════════════════════════╝${_N}"
 echo ""
-
-echo -e "  ${_C}── Chat interfaces ──────────────────────────────────────────────${_N}"
-printf "  ${_Y}%-16s${_N}  %s\n" "webui"    "Open WebUI   http://localhost:8080  (primary)"
-printf "  ${_Y}%-16s${_N}  %s\n" "chat"     "Neural Terminal   http://localhost:8090"
+echo -e "${_C}  ── Chat UIs ─────────────────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}webui${_N}  /  ${_Y}llm-webui${_N}     Open WebUI  →  http://localhost:8080  (primary)"
+echo -e "   ${_Y}chat${_N}   /  ${_Y}llm-chat${_N}      Neural Terminal  →  http://localhost:8090  (fallback)"
 echo ""
-
-echo -e "  ${_C}── CLI inference ─────────────────────────────────────────────────${_N}"
-printf "  ${_Y}%-16s${_N}  %s\n" "run-model / ask"  "Direct llama.cpp inference"
-printf "  ${_Y}%-16s${_N}  %s\n" "gguf-run"         "Direct llama.cpp inference (alias)"
-printf "  ${_Y}%-16s${_N}  %s\n" "ollama-run"       "Ollama CLI inference"
-printf "  ${_Y}%-16s${_N}  %s\n" "ollama-start"     "Start the Ollama backend"
+echo -e "${_C}  ── CLI inference ─────────────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}run-model${_N}  /  ${_Y}ask${_N}    Direct terminal chat (active model)"
+echo -e "   ${_Y}gguf-run${_N}              Run a raw GGUF file directly"
+echo -e "   ${_Y}ollama-run${_N} <tag>      Run any Ollama model"
 echo ""
-
-echo -e "  ${_C}── Model management ──────────────────────────────────────────────${_N}"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-add"      "Download additional models from catalog"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-switch"   "Change the active model"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-status"   "Show loaded models and GGUF files"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-checker"  "Live hardware + model diagnostics"
-printf "  ${_Y}%-16s${_N}  %s\n" "gguf-list"    "List downloaded GGUF files"
-printf "  ${_Y}%-16s${_N}  %s\n" "ollama-list"  "List Ollama models"
+echo -e "${_C}  ── Autonomous coworking ─────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}cowork${_N}                Open Interpreter — writes/runs code, edits files"
+echo -e "   ${_Y}ai${_N}  /  ${_Y}aider${_N}          Aider — AI pair programmer (git-integrated)"
 echo ""
-
-echo -e "  ${_C}── Service control ───────────────────────────────────────────────${_N}"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-stop"    "Stop Ollama + WebUI"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-update"  "Upgrade Ollama + Open WebUI + re-pull model"
+echo -e "${_C}  ── Model management ─────────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}llm-add${_N}               Download additional models (with catalog)"
+echo -e "   ${_Y}llm-switch${_N}            Change active model (no reinstall)"
+echo -e "   ${_Y}llm-status${_N}            Show installed models + disk usage"
+echo -e "   ${_Y}llm-checker${_N}           Hardware scan + model dashboard"
+echo -e "   ${_Y}gguf-list${_N}             List all downloaded GGUF files"
+echo -e "   ${_Y}ollama-list${_N}           ollama list"
 echo ""
-
-echo -e "  ${_C}── Info & diagnostics ────────────────────────────────────────────${_N}"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-show-config"  "All paths, model config, service status"
-printf "  ${_Y}%-16s${_N}  %s\n" "llm-help"         "This screen"
+echo -e "${_C}  ── Service control ──────────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}ollama-start${_N}          Start Ollama backend"
+echo -e "   ${_Y}llm-stop${_N}              Stop Ollama + WebUI + Neural Terminal"
+echo -e "   ${_Y}llm-update${_N}            Upgrade Open WebUI + pip packages (Ollama stays locked)"
 echo ""
-
-echo -e "  ${_C}── AI coding  ${_G}(local — no API key needed)${_N} ──────────────────────${_N}"
-printf "  ${_Y}%-16s${_N}  %s\n" "cowork"     "Open Interpreter — autonomous AI (local model)"
-printf "  ${_Y}%-16s${_N}  %s\n" "ai / aider" "Aider pair programmer — git-integrated"
-printf "  ${_Y}%-16s${_N}  %s\n" "run-model"  "Direct terminal chat with active local model"
+echo -e "${_C}  ── Info / diagnostics ───────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}llm-show-config${_N}       Paths · model config · service status"
+echo -e "   ${_Y}llm-help${_N}              This reference"
 echo ""
-
-echo -e "  ${_C}── AI coding  ${_M}(cloud — optional installs via setup)${_N} ──────────────${_N}"
-printf "  ${_M}%-16s${_N}  %s\n" "claude"       "Claude Code  (ANTHROPIC_API_KEY required)"
-printf "  ${_M}%-16s${_N}  %s\n" "codex-agent"  "OpenAI Codex (OPENAI_API_KEY required)"
+echo -e "${_C}  ── Cloud AI (optional — needs API key) ─────────────────────────────────────────${_N}"
+echo -e "   ${_Y}claude${_N}  /  ${_Y}claude-code${_N}   Anthropic Claude Code  ${_M}(ANTHROPIC_API_KEY)${_N}"
+echo -e "   ${_Y}codex-agent${_N}            OpenAI Codex CLI  ${_M}(OPENAI_API_KEY)${_N}"
 echo ""
-
-echo -e "  ${_C}── WSL2 quickstart ───────────────────────────────────────────────${_N}"
-echo -e "  ${_M}  Run webui — it starts Ollama automatically${_N}"
+echo -e "${_C}  ── Security (optional) ──────────────────────────────────────────────────────────${_N}"
+echo -e "   ${_Y}pentestagent-start${_N}    PentestAgent AI (RAG + Ollama — fully local)"
 echo ""
-_rule
+echo -e "${_C}  ── Quick start ──────────────────────────────────────────────────────────────────${_N}"
+echo -e "   1. ${_Y}ollama-start${_N}           Start the backend"
+echo -e "   2. ${_Y}webui${_N}                   Open WebUI (primary interface)"
+echo -e "   3. ${_Y}chat${_N}                    Neural Terminal (fallback interface)"
+echo -e "   4. ${_Y}cowork${_N}                  Autonomous coding assistant"
 echo ""
-SCRIPT_EOF
-chmod +x "${BIN_DIR}/llm-help"
+echo -e "${_G}  All commands available in ~/.local/bin — added to PATH in ~/.bashrc${_N}"
+echo -e "${_G}  Log file: $HOME/llm-auto-setup-*.log${_N}"
+echo ""
+HELP
+chmod +x "$BIN_DIR/llm-help"
 
-info "llm-help installed."
+# Create symlinks/aliases for common commands
+ln -sf "$BIN_DIR/llm-webui" "$BIN_DIR/webui" 2>/dev/null || true
+ln -sf "$BIN_DIR/llm-chat" "$BIN_DIR/chat" 2>/dev/null || true
+ln -sf "$BIN_DIR/llm-checker" "$BIN_DIR/llm-status" 2>/dev/null || true
+ln -sf "$BIN_DIR/run-gguf" "$BIN_DIR/gguf-run" 2>/dev/null || true
+ln -sf "$BIN_DIR/run-gguf" "$BIN_DIR/gguf-list" 2>/dev/null || true
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 18 — ALIASES + SELF-INSTALL
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Aliases + self-install"
+# =============================================================================
+# STEP 18 — FINAL ALIASES & CLEANUP
+# =============================================================================
+step "Final configuration"
 
-# Write alias file
-cat > "$ALIAS_FILE" <<EOF
-# ── llm-auto-setup aliases ────────────────────────────────────────────────────
-alias llm-setup='bash "${SCRIPT_INSTALL_PATH}"'
-alias webui='${BIN_DIR}/llm-webui'
-alias chat='${BIN_DIR}/llm-chat'
-alias run-model='${BIN_DIR}/run-gguf'
-alias ask='${BIN_DIR}/run-gguf'
-alias gguf-run='${BIN_DIR}/run-gguf'
-alias gguf-list='ls -lh ~/local-llm-models/gguf/*.gguf 2>/dev/null || echo "(no GGUF files)"'
-alias ollama-run='ollama run'
-alias ollama-pull='ollama pull'
+# Create a custom aliases file
+cat > "$ALIAS_FILE" <<'ALIASES'
+# Local LLM aliases
+alias llm-help='llm-help'
+alias webui='llm-webui'
+alias chat='llm-chat'
+alias cowork='cowork'
+alias ai='aider'
+alias ask='run-model'
 alias ollama-list='ollama list'
-alias ollama-start='${BIN_DIR}/ollama-start'
-alias llm-status='${BIN_DIR}/local-models-info'
-alias llm-stop='${BIN_DIR}/llm-stop'
-alias llm-update='${BIN_DIR}/llm-update'
-alias llm-switch='${BIN_DIR}/llm-switch'
-alias llm-add='${BIN_DIR}/llm-add'
-alias llm-checker='${BIN_DIR}/llm-checker'
-alias llm-help='${BIN_DIR}/llm-help'
-alias llm-show-config='${BIN_DIR}/llm-show-config'
-alias ai='${BIN_DIR}/aider'
-alias aider='${BIN_DIR}/aider'
-alias cowork='${BIN_DIR}/cowork'
-EOF
+alias gguf-list='ls -lh ~/local-llm-models/gguf/*.gguf 2>/dev/null | sort -h'
+alias models='llm-status'
+alias check-gpu='watch -n 1 nvidia-smi 2>/dev/null || watch -n 1 rocm-smi 2>/dev/null || echo "No GPU monitor found"'
+alias kill-llm='llm-stop'
+alias update-llm='llm-update'
+alias switch-model='llm-switch'
+alias add-model='llm-add'
+alias show-config='llm-show-config'
 
-# Source alias file from .bashrc idempotently
-if ! grep -q "# llm-auto-setup aliases" "$HOME/.bashrc" 2>/dev/null; then
-    cat >> "$HOME/.bashrc" <<EOF
-
-# llm-auto-setup aliases
-[[ -f "$ALIAS_FILE" ]] && source "$ALIAS_FILE"
-EOF
-fi
-
-# WSL2 welcome (login shell, run once per session)
-if is_wsl2; then
-    if ! grep -q "# WSL2 welcome — llm-auto-setup" "$HOME/.bash_profile" 2>/dev/null; then
-        cat >> "$HOME/.bash_profile" <<'EOF'
-
-# WSL2 welcome — llm-auto-setup
-if grep -qi microsoft /proc/version 2>/dev/null; then
-    source "$HOME/.bashrc" 2>/dev/null || true
-    [[ -x "$HOME/.local/bin/llm-help" ]] && "$HOME/.local/bin/llm-help"
-fi
-EOF
+# Convenience functions
+run-model() {
+    local prompt="$*"
+    if [[ -z "$prompt" ]]; then
+        echo "Usage: run-model 'your question here'"
+        return 1
     fi
-fi
-
-# Self-install
-mkdir -p "$CONFIG_DIR"
-cp "$0" "$SCRIPT_INSTALL_PATH"
-chmod +x "$SCRIPT_INSTALL_PATH"
-info "Script installed to $SCRIPT_INSTALL_PATH"
-info "Aliases written to $ALIAS_FILE"
-
-# Source aliases now
-# shellcheck disable=SC1090
-source "$ALIAS_FILE" 2>/dev/null || true
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 19 — FINAL CHECKS
-# ═══════════════════════════════════════════════════════════════════════════════
-step "Final checks"
-
-PASS=0; WARN_COUNT=0
-_check() {
-    local label="$1" ok="$2" detail="${3:-}"
-    if (( ok )); then
-        printf "  ${ACCENT2}✓${NC}  %-34s ${MUTED}%s${NC}\n" "$label" "$detail"
-        (( PASS++ ))
-    else
-        printf "  ${WARN_COL}✗${NC}  %-34s ${WARN_COL}%s${NC}\n" "$label" "${detail:-not found}"
-        (( WARN_COUNT++ ))
-    fi
+    curl -X POST http://localhost:11434/api/generate -d "{
+        \"model\": \"$(grep OLLAMA_TAG ~/.config/local-llm/selected_model.conf 2>/dev/null | cut -d'"' -f2 || echo 'qwen3:8b')\",
+        \"prompt\": \"$prompt\",
+        \"stream\": false
+    }" | jq -r '.response' 2>/dev/null || echo "Error: Ollama not running or model not found"
 }
 
-# 1. Ollama binary
-command -v ollama &>/dev/null && _c1=1 || _c1=0
-_check "Ollama binary" $_c1 "$(command -v ollama 2>/dev/null || echo '')"
+# cd to work directory
+work() {
+    cd ~/work
+    echo "📁 Working in: $(pwd)"
+    ls -la
+}
+ALIASES
 
-# 2. Ollama service responding
-ollama_running && _c2=1 || _c2=0
-_check "Ollama service responding" $_c2 "http://127.0.0.1:11434"
-
-# 3. llama-cpp-python importable
-"$VENV_DIR/bin/python3" -c "from llama_cpp import Llama" 2>/dev/null && _c3=1 || _c3=0
-_check "llama-cpp-python importable" $_c3 "$VENV_DIR"
-
-# 4. Open WebUI venv + version
-[[ -d "$OWUI_VENV" ]] && _owui_ver=$("$OWUI_VENV/bin/pip" show open-webui 2>/dev/null | grep ^Version | cut -d' ' -f2 || echo "?") && _c4=1 || { _c4=0; _owui_ver="not installed"; }
-_check "Open WebUI venv" $_c4 "v${_owui_ver}"
-
-# 5. GGUF model file exists
-[[ -f "$GGUF_MODELS/${M[file]}" ]] && _c5=1 || _c5=0
-_check "GGUF model file on disk" $_c5 "${M[file]}"
-
-# 6. Ollama tag registered
-_c6=0
-if ollama_running; then
-    ollama list 2>/dev/null | grep -q "$OLLAMA_TAG" && _c6=1
+# Source aliases in .bashrc if not already present
+if ! grep -q "# llm-auto-setup aliases" "$HOME/.bashrc" 2>/dev/null; then
+    {
+        printf '\n# llm-auto-setup aliases\n'
+        printf 'if [[ -f "%s" ]]; then\n' "$ALIAS_FILE"
+        printf '    source "%s"\n' "$ALIAS_FILE"
+        printf 'fi\n'
+    } >> "$HOME/.bashrc"
+    info "Aliases added to ~/.bashrc"
 fi
-_check "Ollama tag registered" $_c6 "$OLLAMA_TAG"
 
-# 7. cowork launcher executable
-[[ -x "$BIN_DIR/cowork" ]] && _c7=1 || _c7=0
-_check "cowork launcher executable" $_c7 "$BIN_DIR/cowork"
+# Clean up temp files
+rm -rf "$TEMP_DIR"/* 2>/dev/null || true
+info "Temporary files cleaned up"
 
-# 8. aider launcher executable
-[[ -x "$BIN_DIR/aider" ]] && _c8=1 || _c8=0
-_check "aider launcher executable" $_c8 "$BIN_DIR/aider"
+# =============================================================================
+# STEP 19 — INSTALLATION COMPLETE
+# =============================================================================
+step "Installation complete!"
 
-# 9. Open Interpreter pkg_resources health
-"$OI_VENV/bin/python3" -c "import pkg_resources" 2>/dev/null && _c9=1 || _c9=0
-_check "Open Interpreter pkg_resources" $_c9 "$OI_VENV"
+# Clear the progress bar line
+printf "\n"
 
-# 10. Neural Terminal HTML exists
-[[ -f "$GUI_DIR/index.html" ]] && _c10=1 || _c10=0
-_check "Neural Terminal HTML" $_c10 "$GUI_DIR/index.html"
+# Final success banner
+_rule "═" "${ACCENT2}"
+printf "${ACCENT2}${BOLD}  ✅  LLM AUTO-SETUP v%s SUCCESSFUL  ${NC}\n" "$SCRIPT_VERSION"
+_rule "═" "${ACCENT2}"
+printf "\n"
 
-# 11. Alias file exists
-[[ -f "$ALIAS_FILE" ]] && _c11=1 || _c11=0
-_check "Alias file" $_c11 "$ALIAS_FILE"
-
-# 12. Script self-installed
-[[ -f "$SCRIPT_INSTALL_PATH" ]] && _c12=1 || _c12=0
-_check "Script self-installed" $_c12 "$SCRIPT_INSTALL_PATH"
-
-echo ""
-printf "  ${BOLD}%-20s${NC}  ${ACCENT2}%s passed${NC}  ${WARN_COL}%s warnings${NC}\n" \
-    "Results:" "$PASS" "$WARN_COUNT"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# COMPLETION SCREEN
-# ═══════════════════════════════════════════════════════════════════════════════
-echo ""
-_rule "═"
-echo -e "${ACCENT2}${BOLD}"
-echo "  ██████╗  ██████╗ ███╗   ██╗███████╗"
-echo "  ██╔══██╗██╔═══██╗████╗  ██║██╔════╝"
-echo "  ██║  ██║██║   ██║██╔██╗ ██║█████╗  "
-echo "  ██║  ██║██║   ██║██║╚██╗██║██╔══╝  "
-echo "  ██████╔╝╚██████╔╝██║ ╚████║███████╗"
-echo "  ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚══════╝"
-echo -e "${NC}"
-echo -e "  ${BOLD}Installation complete!  Local LLM stack is ready.${NC}"
-_rule "═"
-echo ""
-echo -e "  ${BOLD}Hardware${NC}"
-printf "  ${CYAN}%-12s${NC}  %s\n"  "CPU"  "$CPU_MODEL"
-printf "  ${CYAN}%-12s${NC}  %s GB\n"  "RAM"  "$TOTAL_RAM_GB"
+# Hardware summary
+printf "  ${BOLD}${ACCENT}System:${NC}\n"
+printf "  ├─ CPU: ${CPU_MODEL:0:50}\n"
+printf "  ├─ RAM: ${TOTAL_RAM_GB} GB total, ${AVAIL_RAM_GB} GB available\n"
 if (( HAS_NVIDIA )); then
-    printf "  ${CYAN}%-12s${NC}  %s  (%s GB VRAM)  [CUDA]\n"  "GPU"  "$GPU_NAME"  "$GPU_VRAM_GB"
-elif (( HAS_AMD_GPU )); then
-    printf "  ${CYAN}%-12s${NC}  %s  (%s GB VRAM)  [ROCm]\n"  "GPU"  "$GPU_NAME"  "$GPU_VRAM_GB"
+    printf "  ├─ GPU: ${GPU_NAME} (${GPU_VRAM_GB} GB VRAM)\n"
+    printf "  ├─ Driver: NVIDIA ${DRIVER_VER}\n"
+elif (( HAS_AMD )); then
+    printf "  ├─ GPU: ${GPU_NAME} (${GPU_VRAM_GB} GB VRAM)\n"
+    printf "  ├─ Driver: AMD ROCm\n"
+elif (( HAS_INTEL )); then
+    printf "  ├─ GPU: ${GPU_NAME} (Intel Arc)\n"
 else
-    printf "  ${CYAN}%-12s${NC}  CPU-only inference\n"  "GPU"
+    printf "  ├─ GPU: None detected (CPU mode)\n"
 fi
-echo ""
-echo -e "  ${BOLD}Model${NC}"
-printf "  ${CYAN}%-12s${NC}  %s\n"  "Selected"    "${M[name]}"
-printf "  ${CYAN}%-12s${NC}  %s\n"  "Ollama tag"  "$OLLAMA_TAG"
-printf "  ${CYAN}%-12s${NC}  GPU: %s  CPU: %s  Batch: %s\n"  "Layers"  "$GPU_LAYERS"  "$CPU_LAYERS"  "$BATCH"
-echo ""
-echo -e "  ${BOLD}Next step — reload your shell${NC}"
-echo ""
-echo -e "      ${ACCENT}exec bash${NC}"
-echo ""
-echo -e "    ${MUTED}Aliases become active. Same window. Same directory.${NC}"
-echo ""
-_rule "─"
-printf "  ${ACCENT2}%-16s${NC}  %s\n"  "webui"      "→  Open WebUI  http://localhost:8080  ← start here"
-printf "  ${ACCENT2}%-16s${NC}  %s\n"  "cowork"     "→  Autonomous AI coder"
-printf "  ${ACCENT2}%-16s${NC}  %s\n"  "llm-help"   "→  All commands"
-_rule "─"
-echo ""
+printf "  └─ Disk: ${DISK_FREE_GB} GB free\n"
+printf "\n"
 
-# Final llm-help call
-[[ -x "$BIN_DIR/llm-help" ]] && "$BIN_DIR/llm-help" || true
+# Model summary
+printf "  ${BOLD}${ACCENT}Active model:${NC}\n"
+printf "  ├─ ${M[name]}\n"
+printf "  ├─ Capabilities: ${M[caps]}\n"
+printf "  ├─ GPU layers: ${GPU_LAYERS} | CPU layers: ${CPU_LAYERS}\n"
+printf "  └─ Ollama tag: ${OLLAMA_TAG}\n"
+printf "\n"
+
+# Available commands
+printf "  ${BOLD}${ACCENT}Quick start:${NC}\n"
+printf "  ┌─────────────────────────────────────────────────────────────┐\n"
+printf "  │ ${BOLD}COMMAND${NC}           ${BOLD}DESCRIPTION${NC}                              │\n"
+printf "  ├─────────────────────────────────────────────────────────────┤\n"
+printf "  │ ${GREEN}ollama-start${NC}     Start Ollama backend                        │\n"
+printf "  │ ${GREEN}webui${NC}             Open WebUI (http://localhost:8080)        │\n"
+printf "  │ ${GREEN}chat${NC}              Neural Terminal (http://localhost:8090)   │\n"
+printf "  │ ${GREEN}cowork${NC}            Autonomous AI coworker (Open Interpreter) │\n"
+printf "  │ ${GREEN}aider${NC}             AI pair programmer                        │\n"
+printf "  │ ${GREEN}ask${NC} 'question'     Quick CLI query                          │\n"
+printf "  │ ${GREEN}llm-help${NC}          Show all commands                         │\n"
+printf "  └─────────────────────────────────────────────────────────────┘\n"
+printf "\n"
+
+# Next steps
+printf "  ${BOLD}${ACCENT}Next steps:${NC}\n"
+printf "  1. Start Ollama:  ${CYAN}ollama-start${NC}\n"
+printf "  2. Launch WebUI:  ${CYAN}webui${NC}  (or ${CYAN}chat${NC} for minimal interface)\n"
+printf "  3. Open browser:  http://localhost:8080\n"
+printf "  4. Try a query:   ${CYAN}ask 'What is machine learning?'${NC}\n"
+printf "  5. Start coding:  ${CYAN}cowork${NC}  (autonomous) or ${CYAN}aider${NC} (pair programming)\n"
+printf "\n"
+
+# Additional models
+printf "  ${BOLD}${ACCENT}Add more models:${NC}\n"
+printf "  • ${CYAN}llm-add${NC}          Browse and download from catalog\n"
+printf "  • ${CYAN}llm-switch${NC}       Switch between downloaded models\n"
+printf "  • ${CYAN}llm-status${NC}       View installed models and disk usage\n"
+printf "\n"
+
+# Log location
+printf "  ${MUTED}Installation log: ${LOG_FILE}${NC}\n"
+printf "\n"
+
+# Check if we need to source bashrc
+printf "  ${YELLOW}Note:${NC} Run '${BOLD}source ~/.bashrc${NC}' or open a new terminal to use the new commands.\n"
+printf "\n"
+
+_rule "─" "${ACCENT}"
+printf "${ACCENT2}${BOLD}  🚀  READY TO GO  ${NC}\n"
+_rule "─" "${ACCENT}"
+printf "\n"
+
+# =============================================================================
+# CLEAN EXIT
+# =============================================================================
+# Kill sudo keepalive
+kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+trap - EXIT INT TERM
+
+exit 0
