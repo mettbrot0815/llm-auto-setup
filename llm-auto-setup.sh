@@ -1002,6 +1002,7 @@ Environment="OLLAMA_ORIGINS=*"
 Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
 Environment="ROCR_VISIBLE_DEVICES=0"
+Environment="OLLAMA_NUM_GPU=999"
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ollama  || warn "systemctl enable ollama failed."
