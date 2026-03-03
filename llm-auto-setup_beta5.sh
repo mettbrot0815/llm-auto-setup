@@ -968,58 +968,33 @@ BATCH="$BATCH"
 OLLAMA_TAG="$OLLAMA_TAG"
 CONF
 info "Config saved: $MODEL_CONFIG"
-
 # =============================================================================
-# STEP 8 — OLLAMA  (installed BEFORE Python venv — needs zstd already present)
-# Locked to v0.12.3 — v0.12.4+ has RTX 30xx / Ampere GPU offload regression
+# STEP 8 — OLLAMA (standard installation)
 # =============================================================================
-step "Ollama v${OLLAMA_LOCKED_VER} (locked — RTX 30xx fix)"
 
-_ollama_ver_ok() {
-    local _cv; _cv=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "0.0.0")
-    [[ "$_cv" == "$OLLAMA_LOCKED_VER" ]]
-}
-
-if command -v ollama &>/dev/null && _ollama_ver_ok; then
-    info "Ollama $OLLAMA_LOCKED_VER already installed ✓"
+# Check if Ollama is already installed
+if command -v ollama &>/dev/null; then
+    info "Ollama already installed ✓"
 else
-    if command -v ollama &>/dev/null; then
-        _cv=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
-        warn "Ollama $_cv detected — downgrading to $OLLAMA_LOCKED_VER (RTX 30xx GPU offload fix)"
-        # Stop any running instance
-        pkill -f "ollama serve" 2>/dev/null || true
-        sudo systemctl stop ollama 2>/dev/null || true
-        sleep 1
-    else
-        info "Installing Ollama $OLLAMA_LOCKED_VER…"
-    fi
-
-    # Download exact locked binary directly (bypasses install.sh which always fetches latest)
-    _pbar 5 "Downloading ollama binary"
-    if sudo curl -fsSL --progress-bar -o /usr/local/bin/ollama "$OLLAMA_LOCKED_URL" 2>>"$LOG_FILE"; then
-        sudo chmod +x /usr/local/bin/ollama
-        _pbar 100 "Ollama $OLLAMA_LOCKED_VER installed"; _pbar_done
+    info "Installing Ollama (latest version)…"
+    _pbar 5 "Downloading and running install script"
+    # Use the official install script (bypasses any version pinning)
+    if curl -fsSL https://ollama.com/install.sh | sh >> "$LOG_FILE" 2>&1; then
+        _pbar 100 "Ollama installed"; _pbar_done
     else
         _pbar_done
-        warn "Direct download failed — trying OLLAMA_VERSION env with install.sh…"
-        retry 3 10 bash -c "OLLAMA_VERSION=${OLLAMA_LOCKED_VER} curl -fsSL https://ollama.com/install.sh | sh" </dev/null \
-            || error "Ollama install failed."
+        error "Ollama installation failed."
     fi
-
-    # Create ollama user/group if missing (install.sh normally does this)
-    id -u ollama &>/dev/null || \
-        sudo useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama >> "$LOG_FILE" 2>&1 || true
-    sudo usermod -aG ollama "$USER" >> "$LOG_FILE" 2>&1 || true
-    unset _cv
 fi
 
-# Verify locked version
-_vcheck=$(ollama --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "?")
-if [[ "$_vcheck" == "$OLLAMA_LOCKED_VER" ]]; then
-    info "Ollama version: $_vcheck ✓ (locked)"
-else
-    warn "Ollama version: $_vcheck (expected $OLLAMA_LOCKED_VER — may have issues on RTX 30xx)"
-fi
+# Create ollama user/group if missing (install.sh normally does this, but just in case)
+id -u ollama &>/dev/null || \
+    sudo useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama >> "$LOG_FILE" 2>&1 || true
+sudo usermod -aG ollama "$USER" >> "$LOG_FILE" 2>&1 || true
+
+# Display installed version (optional)
+_vcheck=$(ollama --version 2>/dev/null | head -1 || echo "unknown")
+info "Ollama version: $_vcheck"
 unset _vcheck
 
 # Configure Ollama environment
@@ -1028,7 +1003,7 @@ OLLAMA_PARALLEL=1
 
 if is_wsl2; then
     # WSL2: write ollama-start launcher
-    cat > "$BIN_DIR/ollama-start" <<OLWSL
+    cat > "$BIN_DIR/ollama-start" <<'OLWSL'
 #!/usr/bin/env bash
 # ollama-start — start Ollama in WSL2 background
 export OLLAMA_MODELS="$OLLAMA_MODELS"
@@ -1039,10 +1014,10 @@ export OLLAMA_NUM_THREAD=$HW_THREADS
 export OLLAMA_ORIGINS="*"
 export OLLAMA_FLASH_ATTENTION=1
 export OLLAMA_KV_CACHE_TYPE=q8_0
-export CUDA_VISIBLE_DEVICES=\${CUDA_VISIBLE_DEVICES:-0}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 pgrep -f "ollama serve" >/dev/null 2>&1 && { echo "Ollama already running."; exit 0; }
-echo "Starting Ollama $OLLAMA_LOCKED_VER…"
-nohup ollama serve >"\$HOME/.ollama.log" 2>&1 &
+echo "Starting Ollama…"
+nohup ollama serve >"$HOME/.ollama.log" 2>&1 &
 sleep 3
 pgrep -f "ollama serve" >/dev/null && echo "Ollama started ✓" \
     || { echo "ERROR — check: cat ~/.ollama.log"; exit 1; }
@@ -1062,6 +1037,7 @@ Environment="OLLAMA_NUM_THREAD=$HW_THREADS"
 Environment="OLLAMA_ORIGINS=*"
 Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+Environment="OLLAMA_NUM_GPU=999
 OLOV
     sudo systemctl daemon-reload >> "$LOG_FILE" 2>&1
     sudo systemctl enable ollama  >> "$LOG_FILE" 2>&1 || warn "systemctl enable ollama failed."
@@ -1086,7 +1062,6 @@ if is_wsl2; then
 else
     sudo systemctl is-active --quiet ollama && info "Ollama service active ✓" || warn "Ollama not active — try: ollama-start"
 fi
-
 # =============================================================================
 # STEP 9 — CUDA / ROCm TOOLKIT
 # =============================================================================
